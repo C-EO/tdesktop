@@ -11,6 +11,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/chat/attach/attach_send_files_way.h"
 #include "base/timer.h"
 
+namespace style {
+struct ComposeControls;
+} // namespace style
+
 namespace Ui {
 
 struct PreparedFile;
@@ -22,8 +26,10 @@ class AlbumPreview final : public RpWidget {
 public:
 	AlbumPreview(
 		QWidget *parent,
+		const style::ComposeControls &st,
 		gsl::span<Ui::PreparedFile> items,
-		SendFilesWay way);
+		SendFilesWay way,
+		Fn<bool()> canToggleSpoiler);
 	~AlbumPreview();
 
 	void setSendWay(SendFilesWay way);
@@ -41,7 +47,15 @@ public:
 		return _thumbChanged.events();
 	}
 
-	rpl::producer<int> thumbModified() const;
+	[[nodiscard]] rpl::producer<int> thumbModified() const {
+		return _thumbModified.events();
+	}
+
+	[[nodiscard]] rpl::producer<> orderUpdated() const {
+		return _orderUpdated.events();
+	}
+
+	[[nodiscard]] QImage generatePriceTagBackground() const;
 
 protected:
 	void paintEvent(QPaintEvent *e) override;
@@ -59,7 +73,6 @@ private:
 	void updateSize();
 	void updateFileRows();
 
-	int thumbIndex(AlbumThumbnail *thumb);
 	AlbumThumbnail *thumbUnderCursor();
 	void deleteThumbByIndex(int index);
 	void changeThumbByIndex(int index);
@@ -86,7 +99,9 @@ private:
 
 	void showContextMenu(not_null<AlbumThumbnail*> thumb, QPoint position);
 
+	const style::ComposeControls &_st;
 	SendFilesWay _sendWay;
+	Fn<bool()> _canToggleSpoiler;
 	style::cursor _cursor = style::cur_default;
 	std::vector<int> _order;
 	std::vector<QSize> _itemsShownDimensions;
@@ -109,6 +124,7 @@ private:
 	rpl::event_stream<int> _thumbDeleted;
 	rpl::event_stream<int> _thumbChanged;
 	rpl::event_stream<int> _thumbModified;
+	rpl::event_stream<> _orderUpdated;
 
 	base::unique_qptr<PopupMenu> _menu;
 

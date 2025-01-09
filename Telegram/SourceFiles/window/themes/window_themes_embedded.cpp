@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/themes/window_themes_embedded.h"
 
 #include "window/themes/window_theme.h"
+#include "lang/lang_keys.h"
 #include "storage/serialize_common.h"
 #include "core/application.h"
 #include "core/core_settings.h"
@@ -18,6 +19,8 @@ namespace Theme {
 namespace {
 
 constexpr auto kMaxAccentColors = 3;
+constexpr auto kDayBaseFile = ":/gui/day-custom-base.tdesktop-theme"_cs;
+constexpr auto kNightBaseFile = ":/gui/night-custom-base.tdesktop-theme"_cs;
 
 const auto kColorizeIgnoredKeys = base::flat_set<QLatin1String>{ {
 	qstr("boxTextFgGood"),
@@ -210,6 +213,9 @@ std::vector<EmbeddedScheme> EmbeddedThemes() {
 	const auto qColor = [](auto hex) {
 		return style::ColorFromHex(hex);
 	};
+	const auto name = [](auto key) {
+		return rpl::deferred([=] { return key(); });
+	};
 	return {
 		EmbeddedScheme{
 			EmbeddedType::Default,
@@ -218,7 +224,7 @@ std::vector<EmbeddedScheme> EmbeddedThemes() {
 			qColor("ffffff"),
 			qColor("eaffdc"),
 			qColor("ffffff"),
-			tr::lng_settings_theme_classic,
+			name(tr::lng_settings_theme_classic),
 			QString(),
 			qColor("40a7e3")
 		},
@@ -229,7 +235,7 @@ std::vector<EmbeddedScheme> EmbeddedThemes() {
 			qColor("ffffff"),
 			qColor("d7f0ff"),
 			qColor("ffffff"),
-			tr::lng_settings_theme_day,
+			name(tr::lng_settings_theme_day),
 			":/gui/day-blue.tdesktop-theme",
 			qColor("40a7e3")
 		},
@@ -240,7 +246,7 @@ std::vector<EmbeddedScheme> EmbeddedThemes() {
 			qColor("6b808d"),
 			qColor("6b808d"),
 			qColor("5ca7d4"),
-			tr::lng_settings_theme_tinted,
+			name(tr::lng_settings_theme_tinted),
 			":/gui/night.tdesktop-theme",
 			qColor("5288c1")
 		},
@@ -251,7 +257,7 @@ std::vector<EmbeddedScheme> EmbeddedThemes() {
 			qColor("6b808d"),
 			qColor("6b808d"),
 			qColor("75bfb5"),
-			tr::lng_settings_theme_night,
+			name(tr::lng_settings_theme_night),
 			":/gui/night-green.tdesktop-theme",
 			qColor("3fc1b0")
 		},
@@ -309,6 +315,40 @@ std::vector<QColor> DefaultAccentColors(EmbeddedType type) {
 		};
 	}
 	Unexpected("Type in Window::Theme::AccentColors.");
+}
+
+Fn<void(style::palette&)> PreparePaletteCallback(
+		bool dark,
+		std::optional<QColor> accent) {
+	return [=](style::palette &palette) {
+		using namespace Theme;
+		const auto &embedded = EmbeddedThemes();
+		const auto i = ranges::find(
+			embedded,
+			dark ? EmbeddedType::Night : EmbeddedType::Default,
+			&EmbeddedScheme::type);
+		Assert(i != end(embedded));
+		const auto colorizer = accent
+			? ColorizerFrom(*i, *accent)
+			: style::colorizer();
+
+		auto instance = Instance();
+		const auto loaded = LoadFromFile(
+			(dark ? kNightBaseFile : kDayBaseFile).utf16(),
+			&instance,
+			nullptr,
+			nullptr,
+			colorizer);
+		Assert(loaded);
+		palette.finalize();
+		palette = instance.palette;
+	};
+}
+
+Fn<void(style::palette&)> PrepareCurrentPaletteCallback() {
+	return [=, data = style::main_palette::save()](style::palette &palette) {
+		palette.load(data);
+	};
 }
 
 QByteArray AccentColors::serialize() const {

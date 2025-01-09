@@ -134,9 +134,9 @@ void EditorBlock::Row::setValue(QColor value) {
 void EditorBlock::Row::fillValueString() {
 	auto addHex = [=](int code) {
 		if (code >= 0 && code < 10) {
-			_valueString.append('0' + code);
+			_valueString.append(QChar('0' + code));
 		} else if (code >= 10 && code < 16) {
-			_valueString.append('a' + (code - 10));
+			_valueString.append(QChar('a' + (code - 10)));
 		}
 	};
 	auto addCode = [=](int code) {
@@ -225,6 +225,10 @@ void EditorBlock::feed(const QString &name, QColor value, const QString &copyOfE
 
 bool EditorBlock::feedCopy(const QString &name, const QString &copyOf) {
 	if (auto row = findRow(copyOf)) {
+		if (copyOf == name) {
+			LOG(("Theme Warning: Skipping value '%1: %2' (the value refers to itself.)").arg(name, copyOf));
+			return true;
+		}
 		if (findRow(name)) {
 			// Remove the existing row and mark all its copies as unique keys.
 			LOG(("Theme Warning: Color value '%1' appears more than once in the color scheme.").arg(name));
@@ -232,6 +236,10 @@ bool EditorBlock::feedCopy(const QString &name, const QString &copyOf) {
 
 			// row was invalidated by removeRow() call.
 			row = findRow(copyOf);
+			// Should not happen, but still check.
+			if (!row) {
+				return true;
+			}
 		}
 		addRow(name, copyOf, row->value());
 	} else {
@@ -323,9 +331,8 @@ void EditorBlock::activateRow(const Row &row) {
 			const auto state = editor->lifetime().make_state<State>();
 
 			const auto save = crl::guard(this, [=] {
-				saveEditing(editor->color());
 				state->cancelLifetime.destroy();
-				box->closeBox();
+				saveEditing(editor->color());
 			});
 			box->boxClosing(
 			) | rpl::start_with_next(crl::guard(this, [=] {
@@ -811,7 +818,7 @@ EditorBlock::Row &EditorBlock::rowAtIndex(int index) {
 }
 
 int EditorBlock::findRowIndex(const QString &name) const {
-	return _indices.value(name, -1);;
+	return _indices.value(name, -1);
 }
 
 EditorBlock::Row *EditorBlock::findRow(const QString &name) {

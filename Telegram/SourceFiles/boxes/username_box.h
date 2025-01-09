@@ -12,20 +12,21 @@ class GenericBox;
 class VerticalLayout;
 } // namespace Ui
 
-namespace Main {
-class Session;
-} // namespace Main
+class PeerData;
 
 void UsernamesBox(
 	not_null<Ui::GenericBox*> box,
-	not_null<Main::Session*> session);
+	not_null<PeerData*> peer);
 
 struct UsernameCheckInfo final {
+	[[nodiscard]] static UsernameCheckInfo PurchaseAvailable(
+		const QString &username,
+		not_null<PeerData*> peer);
+
 	enum class Type {
 		Good,
 		Error,
 		Default,
-		PurchaseAvailable,
 	};
 	Type type;
 	TextWithEntities text;

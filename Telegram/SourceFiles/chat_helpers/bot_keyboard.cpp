@@ -7,18 +7,19 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "chat_helpers/bot_keyboard.h"
 
+#include "api/api_bot.h"
 #include "core/click_handler_types.h"
+#include "data/data_session.h"
+#include "data/data_user.h"
 #include "history/history.h"
 #include "history/history_item_components.h"
-#include "data/data_user.h"
-#include "data/data_session.h"
 #include "main/main_session.h"
-#include "window/window_session_controller.h"
 #include "ui/cached_round_corners.h"
 #include "ui/painter.h"
-#include "api/api_bot.h"
-#include "styles/style_widgets.h"
+#include "ui/ui_utility.h"
+#include "window/window_session_controller.h"
 #include "styles/style_chat.h"
+#include "styles/style_widgets.h"
 
 namespace {
 
@@ -52,7 +53,9 @@ protected:
 	void paintButtonLoading(
 		QPainter &p,
 		const Ui::ChatStyle *st,
-		const QRect &rect) const override;
+		const QRect &rect,
+		int outerWidth,
+		Ui::BubbleRounding rounding) const override;
 	int minButtonWidth(HistoryMessageMarkupButton::Type type) const override;
 
 private:
@@ -107,7 +110,9 @@ void Style::paintButtonIcon(
 void Style::paintButtonLoading(
 		QPainter &p,
 		const Ui::ChatStyle *st,
-		const QRect &rect) const {
+		const QRect &rect,
+		int outerWidth,
+		Ui::BubbleRounding rounding) const {
 	// Buttons with loading progress should not appear here.
 }
 

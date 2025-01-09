@@ -10,7 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/chat/chat_theme.h"
 #include "ui/chat/chat_style.h"
 #include "ui/widgets/scroll_area.h"
-#include "ui/widgets/input_fields.h"
+#include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/buttons.h"
 #include "ui/wrap/padding_wrap.h"
 #include "ui/painter.h"
@@ -273,24 +273,14 @@ AdminLog::OwnedItem GenerateCommentItem(
 	if (data.comment.isEmpty()) {
 		return nullptr;
 	}
-	const auto flags = MessageFlag::HasFromId
-		| MessageFlag::Outgoing
-		| MessageFlag::FakeHistoryItem;
-	const auto replyTo = MsgId();
-	const auto viaBotId = UserId();
-	const auto groupedId = uint64();
-	const auto item = history->makeMessage(
-		history->nextNonHistoryEntryId(),
-		flags,
-		replyTo,
-		viaBotId,
-		base::unixtime::now(),
-		history->session().userId(),
-		QString(),
-		TextWithEntities{ data.comment },
-		MTP_messageMediaEmpty(),
-		HistoryMessageMarkupData(),
-		groupedId);
+	const auto item = history->makeMessage({
+		.id = history->nextNonHistoryEntryId(),
+		.flags = (MessageFlag::HasFromId
+			| MessageFlag::Outgoing
+			| MessageFlag::FakeHistoryItem),
+		.from = history->session().userPeerId(),
+		.date = base::unixtime::now(),
+	}, TextWithEntities{ data.comment }, MTP_messageMediaEmpty());
 	return AdminLog::OwnedItem(delegate, item);
 }
 
@@ -298,29 +288,19 @@ AdminLog::OwnedItem GenerateContactItem(
 		not_null<HistoryView::ElementDelegate*> delegate,
 		not_null<History*> history,
 		const Contact &data) {
-	const auto replyTo = MsgId();
-	const auto viaBotId = UserId();
-	const auto postAuthor = QString();
-	const auto groupedId = uint64();
-	const auto item = history->makeMessage(
-		history->nextNonHistoryEntryId(),
-		(MessageFlag::HasFromId
+	const auto item = history->makeMessage({
+		.id = history->nextNonHistoryEntryId(),
+		.flags = (MessageFlag::HasFromId
 			| MessageFlag::Outgoing
 			| MessageFlag::FakeHistoryItem),
-		replyTo,
-		viaBotId,
-		base::unixtime::now(),
-		history->session().userPeerId(),
-		postAuthor,
-		TextWithEntities(),
-		MTP_messageMediaContact(
-			MTP_string(data.phone),
-			MTP_string(data.firstName),
-			MTP_string(data.lastName),
-			MTP_string(), // vcard
-			MTP_long(0)), // user_id
-		HistoryMessageMarkupData(),
-		groupedId);
+		.from = history->session().userPeerId(),
+		.date = base::unixtime::now(),
+	}, TextWithEntities(), MTP_messageMediaContact(
+		MTP_string(data.phone),
+		MTP_string(data.firstName),
+		MTP_string(data.lastName),
+		MTP_string(), // vcard
+		MTP_long(0))); // user_id
 	return AdminLog::OwnedItem(delegate, item);
 }
 
@@ -418,16 +398,20 @@ void Autocomplete::setupContent() {
 	};
 
 	inner->activated() | rpl::start_with_next(submit, lifetime());
-	connect(input, &Ui::InputField::blurred, [=] {
+	input->focusedChanges(
+	) | rpl::filter(!rpl::mappers::_1) | rpl::start_with_next([=] {
 		base::call_delayed(10, this, [=] {
 			if (!input->hasFocus()) {
 				deactivate();
 			}
 		});
-	});
-	connect(input, &Ui::InputField::cancelled, [=] { deactivate(); });
-	connect(input, &Ui::InputField::changed, refresh);
-	connect(input, &Ui::InputField::submitted, submit);
+	}, input->lifetime());
+	input->cancelled(
+	) | rpl::start_with_next([=] {
+		deactivate();
+	}, input->lifetime());
+	input->changes() | rpl::start_with_next(refresh, input->lifetime());
+	input->submits() | rpl::start_with_next(submit, input->lifetime());
 	input->customUpDown(true);
 
 	_activate = [=] {
@@ -502,7 +486,8 @@ ConfirmContactBox::ConfirmContactBox(
 	const Contact &data,
 	Fn<void(Qt::KeyboardModifiers)> submit)
 : SimpleElementDelegate(controller, [=] { update(); })
-, _chatStyle(std::make_unique<Ui::ChatStyle>())
+, _chatStyle(std::make_unique<Ui::ChatStyle>(
+	history->session().colorIndicesValue()))
 , _comment(GenerateCommentItem(this, history, data))
 , _contact(GenerateContactItem(this, history, data))
 , _submit(submit) {

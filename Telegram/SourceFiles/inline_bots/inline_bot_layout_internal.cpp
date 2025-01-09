@@ -88,8 +88,8 @@ int FileBase::content_height() const {
 
 int FileBase::content_duration() const {
 	if (const auto document = getShownDocument()) {
-		if (document->getDuration() > 0) {
-			return document->getDuration();
+		if (document->hasDuration()) {
+			return document->duration() / 1000;
 		}
 	}
 	return getResultDuration();
@@ -330,7 +330,7 @@ void Gif::validateThumbnail(
 		bool good) const {
 	if (!image || (_thumbGood && !good)) {
 		return;
-	} else if ((_thumb.size() == size * cIntRetinaFactor())
+	} else if ((_thumb.size() == size * style::DevicePixelRatio())
 		&& (_thumbGood || !good)) {
 		return;
 	}
@@ -503,7 +503,7 @@ void Sticker::paint(Painter &p, const QRect &clip, const PaintContext *context) 
 	prepareThumbnail();
 	if (_lottie && _lottie->ready()) {
 		const auto frame = _lottie->frame();
-		const auto size = frame.size() / cIntRetinaFactor();
+		const auto size = frame.size() / style::DevicePixelRatio();
 		const auto pos = QPoint(
 			(st::stickerPanSize.width() - size.width()) / 2,
 			(st::stickerPanSize.height() - size.height()) / 2);
@@ -524,8 +524,11 @@ void Sticker::paint(Painter &p, const QRect &clip, const PaintContext *context) 
 			(st::stickerPanSize.height() - size.width()) / 2,
 			frame);
 	} else if (!_thumb.isNull()) {
-		int w = _thumb.width() / cIntRetinaFactor(), h = _thumb.height() / cIntRetinaFactor();
-		QPoint pos = QPoint((st::stickerPanSize.width() - w) / 2, (st::stickerPanSize.height() - h) / 2);
+		const auto w = _thumb.width() / style::DevicePixelRatio();
+		const auto h = _thumb.height() / style::DevicePixelRatio();
+		const auto pos = QPoint(
+			(st::stickerPanSize.width() - w) / 2,
+			(st::stickerPanSize.height() - h) / 2);
 		p.drawPixmap(pos, _thumb);
 	} else if (context->pathGradient) {
 		const auto thumbSize = getThumbSize();
@@ -583,7 +586,7 @@ void Sticker::setupLottie() const {
 	_lottie = ChatHelpers::LottiePlayerFromDocument(
 		_dataMedia.get(),
 		ChatHelpers::StickerLottieSize::InlineResults,
-		boundingBox() * cIntRetinaFactor());
+		boundingBox() * style::DevicePixelRatio());
 
 	_lottie->updates(
 	) | rpl::start_with_next([=] {
@@ -736,7 +739,7 @@ void Photo::validateThumbnail(
 		bool good) const {
 	if (!image || (_thumbGood && !good)) {
 		return;
-	} else if ((_thumb.size() == size * cIntRetinaFactor())
+	} else if ((_thumb.size() == size * style::DevicePixelRatio())
 		&& (_thumbGood || !good)) {
 		return;
 	}
@@ -893,7 +896,7 @@ void Video::prepareThumbnail(QSize size) const {
 	if (!thumb) {
 		return;
 	}
-	if (_thumb.size() != size * cIntRetinaFactor()) {
+	if (_thumb.size() != size * style::DevicePixelRatio()) {
 		const auto width = size.width();
 		const auto height = size.height();
 		auto w = qMax(style::ConvertScale(thumb->width()), 1);
@@ -1143,12 +1146,10 @@ bool File::updateStatusText() const {
 	}
 
 	if (statusSize != _statusSize) {
-		TimeId duration = _document->isSong()
-			? _document->song()->duration
-			: (_document->isVoiceMessage()
-				? _document->voice()->duration
-				: -1);
-		setStatusSize(statusSize, _document->size, duration, realDuration);
+		const auto duration = _document->isSong()
+			? _document->duration()
+			: (_document->isVoiceMessage() ? _document->duration() : -1);
+		setStatusSize(statusSize, _document->size, (duration >= 0) ? (duration / 1000) : -1, realDuration);
 	}
 	return showPause;
 }
@@ -1227,7 +1228,8 @@ TextState Contact::getState(
 
 void Contact::prepareThumbnail(int width, int height) const {
 	if (!hasResultThumb()) {
-		if (_thumb.width() != width * cIntRetinaFactor() || _thumb.height() != height * cIntRetinaFactor()) {
+		if ((_thumb.width() != width * style::DevicePixelRatio())
+			|| (_thumb.height() != height * style::DevicePixelRatio())) {
 			_thumb = getResultContactAvatar(width, height);
 		}
 		return;
@@ -1236,8 +1238,8 @@ void Contact::prepareThumbnail(int width, int height) const {
 	const auto origin = fileOrigin();
 	const auto thumb = getResultThumb(origin);
 	if (!thumb
-		|| ((_thumb.width() == width * cIntRetinaFactor())
-			&& (_thumb.height() == height * cIntRetinaFactor()))) {
+		|| ((_thumb.width() == width * style::DevicePixelRatio())
+			&& (_thumb.height() == height * style::DevicePixelRatio()))) {
 		return;
 	}
 	auto w = qMax(style::ConvertScale(thumb->width()), 1);
@@ -1269,7 +1271,7 @@ Article::Article(
 , _url(getResultUrlHandler())
 , _link(getResultPreviewHandler())
 , _withThumb(withThumb)
-, _title(st::emojiPanWidth - st::emojiScroll.width - st::inlineResultsLeft - st::inlineThumbSize - st::inlineThumbSkip)
+, _title(st::emojiPanWidth / 2)
 , _description(st::emojiPanWidth - st::emojiScroll.width - st::inlineResultsLeft - st::inlineThumbSize - st::inlineThumbSkip) {
 	if (!_link) {
 		if (const auto point = result->getLocationPoint()) {
@@ -1385,7 +1387,8 @@ TextState Article::getState(
 
 void Article::prepareThumbnail(int width, int height) const {
 	if (!hasResultThumb()) {
-		if (_thumb.width() != width * cIntRetinaFactor() || _thumb.height() != height * cIntRetinaFactor()) {
+		if ((_thumb.width() != width * style::DevicePixelRatio())
+			|| (_thumb.height() != height * style::DevicePixelRatio())) {
 			_thumb = getResultContactAvatar(width, height);
 		}
 		return;
@@ -1394,8 +1397,8 @@ void Article::prepareThumbnail(int width, int height) const {
 	const auto origin = fileOrigin();
 	const auto thumb = getResultThumb(origin);
 	if (!thumb
-		|| ((_thumb.width() == width * cIntRetinaFactor())
-			&& (_thumb.height() == height * cIntRetinaFactor()))) {
+		|| ((_thumb.width() == width * style::DevicePixelRatio())
+			&& (_thumb.height() == height * style::DevicePixelRatio()))) {
 		return;
 	}
 	auto w = qMax(style::ConvertScale(thumb->width()), 1);
@@ -1611,7 +1614,7 @@ void Game::ensureDataMediaCreated(not_null<PhotoData*> photo) const {
 void Game::validateThumbnail(Image *image, QSize size, bool good) const {
 	if (!image || (_thumbGood && !good)) {
 		return;
-	} else if ((_thumb.size() == size * cIntRetinaFactor())
+	} else if ((_thumb.size() == size * style::DevicePixelRatio())
 		&& (_thumbGood || !good)) {
 		return;
 	}

@@ -30,7 +30,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "platform/mac/touchbar/mac_touchbar_common.h"
 #include "styles/style_basic.h"
 #include "styles/style_settings.h"
-#include "ui/widgets/input_fields.h"
+#include "ui/widgets/fields/input_field.h"
 #include "window/section_widget.h"
 #include "window/window_controller.h"
 #include "window/window_session_controller.h"
@@ -46,6 +46,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #import <AppKit/NSScrubberLayout.h>
 #import <AppKit/NSSegmentedControl.h>
 #import <AppKit/NSTextField.h>
+
+#include <QtWidgets/QTextEdit>
 
 using TouchBar::kCircleDiameter;
 using TouchBar::CreateNSImageFromStyleIcon;
@@ -144,9 +146,9 @@ using Platform::Q2NSImage;
 
 NSImage *CreateNSImageFromEmoji(EmojiPtr emoji) {
 	auto image = QImage(
-		QSize(kIdealIconSize, kIdealIconSize) * cIntRetinaFactor(),
+		QSize(kIdealIconSize, kIdealIconSize) * style::DevicePixelRatio(),
 		QImage::Format_ARGB32_Premultiplied);
-	image.setDevicePixelRatio(cRetinaFactor());
+	image.setDevicePixelRatio(style::DevicePixelRatio());
 	image.fill(Qt::black);
 	{
 		Painter paint(&image);
@@ -183,7 +185,9 @@ std::optional<QString> RestrictionToSend(
 		not_null<Window::Controller*> controller,
 		ChatRestriction right) {
 	if (const auto peer = ActiveChat(controller).peer()) {
-		return Data::RestrictionError(peer, right);
+		if (const auto error = Data::RestrictionError(peer, right)) {
+			return *error;
+		}
 	}
 	return std::nullopt;
 }

@@ -14,6 +14,14 @@ namespace Data {
 class Session;
 } // namespace Data
 
+namespace InlineBots {
+enum class PeerType : uint8;
+using PeerTypes = base::flags<PeerType>;
+} // namespace InlineBots
+
+[[nodiscard]] InlineBots::PeerTypes PeerTypesFromMTP(
+	const MTPvector<MTPInlineQueryPeerType> &types);
+
 enum class ReplyMarkupFlag : uint32 {
 	None                  = (1U << 0),
 	ForceReply            = (1U << 1),
@@ -40,6 +48,8 @@ struct RequestPeerQuery {
 		Yes,
 		No,
 	};
+
+	int maxQuantity = 0;
 	Type type = Type::User;
 	Restriction userIsBot = Restriction::Any;
 	Restriction userIsPremium = Restriction::Any;
@@ -70,6 +80,7 @@ struct HistoryMessageMarkupButton {
 		UserProfile,
 		WebView,
 		SimpleWebView,
+		CopyText,
 	};
 
 	HistoryMessageMarkupButton(
@@ -89,6 +100,7 @@ struct HistoryMessageMarkupButton {
 	QString text, forwardText;
 	QByteArray data;
 	int64 buttonId = 0;
+	InlineBots::PeerTypes peerTypes = 0;
 	mutable mtpRequestId requestId = 0;
 
 };

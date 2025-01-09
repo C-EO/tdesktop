@@ -16,8 +16,10 @@ namespace Ui {
 
 SingleMediaPreview *SingleMediaPreview::Create(
 		QWidget *parent,
+		const style::ComposeControls &st,
 		Fn<bool()> gifPaused,
 		const PreparedFile &file,
+		Fn<bool()> canToggleSpoiler,
 		AttachControls::Type type) {
 	auto preview = QImage();
 	auto animated = false;
@@ -43,25 +45,29 @@ SingleMediaPreview *SingleMediaPreview::Create(
 	}
 	return CreateChild<SingleMediaPreview>(
 		parent,
+		st,
 		std::move(gifPaused),
 		preview,
 		animated,
 		Core::IsMimeSticker(file.information->filemime),
 		file.spoiler,
 		animationPreview ? file.path : QString(),
-		type);
+		type,
+		std::move(canToggleSpoiler));
 }
 
 SingleMediaPreview::SingleMediaPreview(
 	QWidget *parent,
+	const style::ComposeControls &st,
 	Fn<bool()> gifPaused,
 	QImage preview,
 	bool animated,
 	bool sticker,
 	bool spoiler,
 	const QString &animatedPreviewPath,
-	AttachControls::Type type)
-: AbstractSingleMediaPreview(parent, type)
+	AttachControls::Type type,
+	Fn<bool()> canToggleSpoiler)
+: AbstractSingleMediaPreview(parent, st, type, std::move(canToggleSpoiler))
 , _gifPaused(std::move(gifPaused))
 , _sticker(sticker) {
 	Expects(!preview.isNull());

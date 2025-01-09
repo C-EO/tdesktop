@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_updates.h"
 #include "apiwrap.h"
 #include "base/random.h"
+#include "data/business/data_shortcut_messages.h"
 #include "data/data_changes.h"
 #include "data/data_histories.h"
 #include "data/data_poll.h"
@@ -43,13 +44,12 @@ void Polls::create(
 
 	const auto history = action.history;
 	const auto peer = history->peer;
-	const auto topicRootId = action.replyTo ? action.topicRootId : 0;
+	const auto topicRootId = action.replyTo.messageId
+		? action.replyTo.topicRootId
+		: 0;
 	auto sendFlags = MTPmessages_SendMedia::Flags(0);
 	if (action.replyTo) {
-		sendFlags |= MTPmessages_SendMedia::Flag::f_reply_to_msg_id;
-		if (topicRootId) {
-			sendFlags |= MTPmessages_SendMedia::Flag::f_top_msg_id;
-		}
+		sendFlags |= MTPmessages_SendMedia::Flag::f_reply_to;
 	}
 	const auto clearCloudDraft = action.clearDraft;
 	if (clearCloudDraft) {
@@ -65,6 +65,12 @@ void Polls::create(
 	if (action.options.scheduled) {
 		sendFlags |= MTPmessages_SendMedia::Flag::f_schedule_date;
 	}
+	if (action.options.shortcutId) {
+		sendFlags |= MTPmessages_SendMedia::Flag::f_quick_reply_shortcut;
+	}
+	if (action.options.effectId) {
+		sendFlags |= MTPmessages_SendMedia::Flag::f_effect;
+	}
 	const auto sendAs = action.options.sendAs;
 	if (sendAs) {
 		sendFlags |= MTPmessages_SendMedia::Flag::f_send_as;
@@ -74,20 +80,20 @@ void Polls::create(
 	histories.sendPreparedMessage(
 		history,
 		action.replyTo,
-		topicRootId,
 		randomId,
 		Data::Histories::PrepareMessage<MTPmessages_SendMedia>(
 			MTP_flags(sendFlags),
 			peer->input,
 			Data::Histories::ReplyToPlaceholder(),
-			Data::Histories::TopicRootPlaceholder(),
 			PollDataToInputMedia(&data),
 			MTP_string(),
 			MTP_long(randomId),
 			MTPReplyMarkup(),
 			MTPVector<MTPMessageEntity>(),
 			MTP_int(action.options.scheduled),
-			(sendAs ? sendAs->input : MTP_inputPeerEmpty())
+			(sendAs ? sendAs->input : MTP_inputPeerEmpty()),
+			Data::ShortcutIdToMTP(_session, action.options.shortcutId),
+			MTP_long(action.options.effectId)
 		), [=](const MTPUpdates &result, const MTP::Response &response) {
 		if (clearCloudDraft) {
 			history->finishSavingCloudDraft(
@@ -176,7 +182,8 @@ void Polls::close(not_null<HistoryItem*> item) {
 		PollDataToInputMedia(poll, true),
 		MTPReplyMarkup(),
 		MTPVector<MTPMessageEntity>(),
-		MTP_int(0) // schedule_date
+		MTP_int(0), // schedule_date
+		MTPint() // quick_reply_shortcut_id
 	)).done([=](const MTPUpdates &result) {
 		_pollCloseRequestIds.erase(itemId);
 		_session->updates().applyUpdates(result);

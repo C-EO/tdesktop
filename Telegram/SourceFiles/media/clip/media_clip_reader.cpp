@@ -180,7 +180,7 @@ struct Worker {
 	Manager manager;
 };
 
-std::vector<std::unique_ptr<Worker>>  Workers;
+std::vector<std::unique_ptr<Worker>> Workers;
 
 } // namespace
 
@@ -974,7 +974,7 @@ Ui::PreparedFileInformation PrepareForSending(
 	auto seekPositionMs = crl::time(0);
 	auto reader = std::make_unique<internal::FFMpegReaderImplementation>(&localLocation, &localData);
 	if (reader->start(internal::ReaderImplementation::Mode::Inspecting, seekPositionMs)) {
-		auto durationMs = reader->durationMs();
+		const auto durationMs = reader->durationMs();
 		if (durationMs > 0) {
 			result.isGifv = reader->isGifv();
 			result.isWebmSticker = reader->isWebmSticker();
@@ -994,7 +994,7 @@ Ui::PreparedFileInformation PrepareForSending(
 				if (hasAlpha && !result.isWebmSticker) {
 					result.thumbnail = Images::Opaque(std::move(result.thumbnail));
 				}
-				result.duration = static_cast<int>(durationMs / 1000);
+				result.duration = durationMs;
 			}
 
 			result.supportsStreaming = CheckStreamingSupport(

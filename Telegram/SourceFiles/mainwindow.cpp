@@ -16,16 +16,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/shadow.h"
 #include "ui/widgets/tooltip.h"
-#include "ui/layers/layer_widget.h"
 #include "ui/emoji_config.h"
 #include "ui/ui_utility.h"
 #include "lang/lang_cloud_manager.h"
 #include "lang/lang_instance.h"
-#include "lang/lang_keys.h"
-#include "core/shortcuts.h"
 #include "core/sandbox.h"
 #include "core/application.h"
 #include "export/export_manager.h"
+#include "inline_bots/bot_attach_web_view.h" // AttachWebView::cancel.
 #include "intro/intro_widget.h"
 #include "main/main_session.h"
 #include "main/main_account.h" // Account::sessionValue.
@@ -38,14 +36,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "apiwrap.h"
 #include "api/api_updates.h"
 #include "settings/settings_intro.h"
-#include "platform/platform_notifications_manager.h"
-#include "base/platform/base_platform_info.h"
 #include "base/options.h"
-#include "base/variant.h"
 #include "window/notifications_manager.h"
 #include "window/themes/window_theme.h"
 #include "window/themes/window_theme_warning.h"
-#include "window/window_lock_widgets.h"
 #include "window/window_main_menu.h"
 #include "window/window_controller.h" // App::wnd.
 #include "window/window_session_controller.h"
@@ -55,7 +49,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_window.h"
 
 #include <QtGui/QWindow>
-#include <QtCore/QCoreApplication>
 
 namespace {
 
@@ -85,8 +78,8 @@ base::options::toggle AutoScrollInactiveChat({
 
 } // namespace
 
-const char kOptionAutoScrollInactiveChat[] =
-	"auto-scroll-inactive-chat";
+const char kOptionAutoScrollInactiveChat[]
+	= "auto-scroll-inactive-chat";
 
 MainWindow::MainWindow(not_null<Window::Controller*> controller)
 : Platform::MainWindow(controller) {
@@ -115,16 +108,7 @@ MainWindow::MainWindow(not_null<Window::Controller*> controller)
 
 void MainWindow::initHook() {
 	Platform::MainWindow::initHook();
-
 	QCoreApplication::instance()->installEventFilter(this);
-
-	// Non-queued activeChanged handlers must use QtSignalProducer.
-	connect(
-		windowHandle(),
-		&QWindow::activeChanged,
-		this,
-		[=] { checkActivation(); },
-		Qt::QueuedConnection);
 }
 
 void MainWindow::applyInitialWorkMode() {
@@ -156,7 +140,9 @@ void MainWindow::finishFirstShow() {
 	applyInitialWorkMode();
 	createGlobalMenu();
 
-	windowDeactivateEvents(
+	windowActiveValue(
+	) | rpl::skip(1) | rpl::filter(
+		!rpl::mappers::_1
 	) | rpl::start_with_next([=] {
 		Ui::Tooltip::Hide();
 	}, lifetime());
@@ -206,6 +192,9 @@ void MainWindow::setupPasscodeLock() {
 	} else {
 		_passcodeLock->showFinished();
 		setInnerFocus();
+	}
+	if (const auto sessionController = controller().sessionController()) {
+		sessionController->session().attachWebView().closeAll();
 	}
 }
 
@@ -281,13 +270,11 @@ void MainWindow::setupMain(
 	auto created = object_ptr<MainWidget>(bodyWidget(), sessionController());
 	clearWidgets();
 	_main = std::move(created);
-	if (const auto peer = singlePeer()) {
-		updateControlsGeometry();
-		_main->controller()->showPeerHistory(
-			peer,
-			Window::SectionShow::Way::ClearStack,
-			singlePeerShowAtMsgId);
-	}
+	updateControlsGeometry();
+	Ui::SendPendingMoveResizeEvents(_main);
+	_main->controller()->showByInitialId(
+		Window::SectionShow::Way::ClearStack,
+		singlePeerShowAtMsgId);
 	if (_passcodeLock) {
 		_main->hide();
 	} else {
@@ -361,8 +348,7 @@ void MainWindow::ensureLayerCreated() {
 	}
 	_layer = base::make_unique_q<Ui::LayerStackWidget>(
 		bodyWidget(),
-		crl::guard(this, [=] {
-			return std::make_shared<Window::Show>(&controller()); }));
+		crl::guard(this, [=] { return controller().uiShow(); }));
 
 	_layer->hideFinishEvents(
 	) | rpl::filter([=] {
@@ -417,7 +403,7 @@ MainWidget *MainWindow::sessionContent() const {
 	return _main.data();
 }
 
-void MainWindow::showBoxOrLayer(
+void MainWindow::showOrHideBoxOrLayer(
 		std::variant<
 			v::null_t,
 			object_ptr<Ui::BoxContent>,
@@ -429,7 +415,7 @@ void MainWindow::showBoxOrLayer(
 	if (auto layerWidget = std::get_if<UniqueLayer>(&layer)) {
 		ensureLayerCreated();
 		_layer->showLayer(std::move(*layerWidget), options, animated);
-	} else if (auto box = std::get_if<ObjectBox>(&layer); *box != nullptr) {
+	} else if (auto box = std::get_if<ObjectBox>(&layer)) {
 		ensureLayerCreated();
 		_layer->showBox(std::move(*box), options, animated);
 	} else {
@@ -443,20 +429,6 @@ void MainWindow::showBoxOrLayer(
 		}
 		Core::App().hideMediaView();
 	}
-}
-
-void MainWindow::ui_showBox(
-		object_ptr<Ui::BoxContent> box,
-		Ui::LayerOptions options,
-		anim::type animated) {
-	showBoxOrLayer(std::move(box), options, animated);
-}
-
-void MainWindow::showLayer(
-		std::unique_ptr<Ui::LayerWidget> &&layer,
-		Ui::LayerOptions options,
-		anim::type animated) {
-	showBoxOrLayer(std::move(layer), options, animated);
 }
 
 bool MainWindow::ui_isLayerShown() const {
@@ -546,6 +518,7 @@ bool MainWindow::markingAsRead() const {
 		&& !_layer
 		&& !isHidden()
 		&& !isMinimized()
+		&& windowHandle()->isExposed()
 		&& (AutoScrollInactiveChat.value()
 			|| (isActive() && !_main->session().updates().isIdle()));
 }
@@ -622,7 +595,7 @@ bool MainWindow::eventFilter(QObject *object, QEvent *e) {
 	case QEvent::ApplicationActivate: {
 		if (object == QCoreApplication::instance()) {
 			InvokeQueued(this, [=] {
-				handleActiveChanged();
+				handleActiveChanged(isActiveWindow());
 			});
 		}
 	} break;

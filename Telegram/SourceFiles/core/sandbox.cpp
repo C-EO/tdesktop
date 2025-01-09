@@ -20,6 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/launcher.h"
 #include "core/local_url_handlers.h"
 #include "core/update_checker.h"
+#include "core/deadlock_detector.h"
 #include "base/timer.h"
 #include "base/concurrent_timer.h"
 #include "base/invoke_queued.h"
@@ -78,14 +79,9 @@ QString _escapeFrom7bit(const QString &str) {
 
 bool Sandbox::QuitOnStartRequested = false;
 
-Sandbox::Sandbox(
-	not_null<Core::Launcher*> launcher,
-	int &argc,
-	char **argv)
+Sandbox::Sandbox(int &argc, char **argv)
 : QApplication(argc, argv)
-, _mainThreadId(QThread::currentThreadId())
-, _launcher(launcher) {
-	setQuitOnLastWindowClosed(false);
+, _mainThreadId(QThread::currentThreadId()) {
 }
 
 int Sandbox::start() {
@@ -107,7 +103,8 @@ int Sandbox::start() {
 		hashMd5Hex(d.constData(), d.size(), h.data());
 		_lockFile = std::make_unique<QLockFile>(QDir::tempPath() + '/' + h + '-' + cGUIDStr());
 		_lockFile->setStaleLockTime(0);
-		if (!_lockFile->tryLock() && _launcher->customWorkingDir()) {
+		if (!_lockFile->tryLock()
+			&& Launcher::Instance().customWorkingDir()) {
 			// On Windows, QLockFile has problems detecting a stale lock
 			// if the machine's hostname contains characters outside the US-ASCII character set.
 			if constexpr (Platform::IsWindows()) {
@@ -121,6 +118,11 @@ int Sandbox::start() {
 			}
 		}
 	}
+
+#if defined Q_OS_LINUX && QT_VERSION >= QT_VERSION_CHECK(6, 2, 0)
+	_localServer.setSocketOptions(QLocalServer::AbstractNamespaceOption);
+	_localSocket.setSocketOptions(QLocalSocket::AbstractNamespaceOption);
+#endif // Q_OS_LINUX && Qt >= 6.2.0
 
 	connect(
 		&_localSocket,
@@ -156,16 +158,9 @@ int Sandbox::start() {
 
 	// https://github.com/telegramdesktop/tdesktop/issues/948
 	// and https://github.com/telegramdesktop/tdesktop/issues/5022
-	const auto restartHint = [](QSessionManager &manager) {
+	connect(this, &QGuiApplication::saveStateRequest, [](auto &manager) {
 		manager.setRestartHint(QSessionManager::RestartNever);
-	};
-
-	connect(
-		this,
-		&QGuiApplication::saveStateRequest,
-		this,
-		restartHint,
-		Qt::DirectConnection);
+	});
 
 	LOG(("Connecting local socket to %1...").arg(_localServerName));
 	_localSocket.connectToServer(_localServerName);
@@ -195,7 +190,14 @@ void Sandbox::launchApplication() {
 		}
 		setupScreenScale();
 
-		_application = std::make_unique<Application>(_launcher);
+#ifndef _DEBUG
+		if (Logs::DebugEnabled()) {
+			using DeadlockDetector::PingThread;
+			_deadlockDetector = std::make_unique<PingThread>(this);
+		}
+#endif // !_DEBUG
+
+		_application = std::make_unique<Application>();
 
 		// Ideally this should go to constructor.
 		// But we want to catch all native events and Application installs
@@ -213,7 +215,7 @@ void Sandbox::setupScreenScale() {
 	const auto logEnv = [](const char *name) {
 		const auto value = qEnvironmentVariable(name);
 		if (!value.isEmpty()) {
-			LOG(("%1: %2").arg(name).arg(value));
+			LOG(("%1: %2").arg(name, value));
 		}
 	};
 	logEnv("QT_DEVICE_PIXEL_RATIO");
@@ -226,12 +228,7 @@ void Sandbox::setupScreenScale() {
 	logEnv("QT_USE_PHYSICAL_DPI");
 	logEnv("QT_FONT_DPI");
 
-	// Like Qt::HighDpiScaleFactorRoundingPolicy::RoundPreferFloor.
-	// Round up for .75 and higher. This favors "small UI" over "large UI".
-	const auto roundedRatio = ((ratio - qFloor(ratio)) < 0.75)
-		? qFloor(ratio)
-		: qCeil(ratio);
-	const auto useRatio = std::clamp(roundedRatio, 1, 3);
+	const auto useRatio = std::clamp(qCeil(ratio), 1, 3);
 	style::SetDevicePixelRatio(useRatio);
 
 	const auto screen = Sandbox::primaryScreen();
@@ -258,12 +255,19 @@ void Sandbox::setupScreenScale() {
 Sandbox::~Sandbox() = default;
 
 bool Sandbox::event(QEvent *e) {
-	if (e->type() == QEvent::Quit && !Quitting()) {
+	if (e->type() == QEvent::Quit) {
+		if (Quitting()) {
+			return QCoreApplication::event(e);
+		}
 		Quit(QuitReason::QtQuitEvent);
 		e->ignore();
 		return false;
 	} else if (e->type() == QEvent::Close) {
 		Quit();
+	} else if (e->type() == DeadlockDetector::PingPongEvent::Type()) {
+		postEvent(
+			static_cast<DeadlockDetector::PingPongEvent*>(e)->sender(),
+			new DeadlockDetector::PingPongEvent(this));
 	}
 	return QApplication::event(e);
 }
@@ -396,7 +400,6 @@ void Sandbox::singleInstanceChecked() {
 		}
 		_lastCrashDump = crashdump;
 		auto window = new LastCrashedWindow(
-			_launcher,
 			_lastCrashDump,
 			[=] { launchApplication(); });
 		window->proxyChanges(
@@ -524,14 +527,6 @@ void Sandbox::refreshGlobalProxy() {
 	}
 }
 
-bool Sandbox::customWorkingDir() const {
-	return _launcher->customWorkingDir();
-}
-
-uint64 Sandbox::installationTag() const {
-	return _launcher->installationTag();
-}
-
 void Sandbox::checkForEmptyLoopNestingLevel() {
 	// _loopNestingLevel == _eventNestingLevel means that we had a
 	// native event in a nesting loop that didn't get a notify() call
@@ -587,7 +582,7 @@ void Sandbox::registerEnterFromEventLoop() {
 }
 
 bool Sandbox::notifyOrInvoke(QObject *receiver, QEvent *e) {
-	if (e->type() == base::InvokeQueuedEvent::kType) {
+	if (e->type() == base::InvokeQueuedEvent::Type()) {
 		static_cast<base::InvokeQueuedEvent*>(e)->invoke();
 		return true;
 	}
@@ -625,7 +620,7 @@ void Sandbox::processPostponedCalls(int level) {
 bool Sandbox::nativeEventFilter(
 		const QByteArray &eventType,
 		void *message,
-		base::NativeEventResult *result) {
+		native_event_filter_result *result) {
 	registerEnterFromEventLoop();
 	return false;
 }

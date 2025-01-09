@@ -19,7 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "info/info_memento.h"
 #include "ui/widgets/labels.h"
 #include "ui/widgets/buttons.h"
-#include "ui/widgets/input_fields.h"
+#include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/scroll_area.h"
 #include "ui/wrap/padding_wrap.h"
 #include "ui/text/text_utilities.h" // Ui::Text::ToUpper
@@ -46,10 +46,11 @@ Members::Members(
 	QWidget *parent,
 	not_null<Controller*> controller)
 : RpWidget(parent)
-, _show(std::make_unique<Window::Show>(controller->parentController()))
+, _show(controller->uiShow())
 , _controller(controller)
 , _peer(_controller->key().peer())
 , _listController(CreateMembersController(controller, _peer)) {
+	_listController->setStoriesShown(true);
 	setupHeader();
 	setupList();
 	setContent(_list.data());
@@ -232,6 +233,7 @@ void Members::setupButtons() {
 void Members::setupList() {
 	auto topSkip = _header ? _header->height() : 0;
 	_listController->setStyleOverrides(&st::infoMembersList);
+	_listController->setStoriesShown(true);
 	_list = object_ptr<ListWidget>(
 		this,
 		_listController.get());
@@ -457,18 +459,8 @@ void Members::peerListAddSelectedRowInBunch(not_null<PeerListRow*> row) {
 void Members::peerListFinishSelectedRowsBunch() {
 }
 
-void Members::peerListShowBox(
-		object_ptr<Ui::BoxContent> content,
-		Ui::LayerOptions options) {
-	_show->showBox(std::move(content), options);
-}
-
-void Members::peerListHideLayer() {
-	_show->hideLayer();
-}
-
-not_null<QWidget*> Members::peerListToastParent() {
-	return _show->toastParent();
+std::shared_ptr<Main::SessionShow> Members::peerListUiShow() {
+	return _show;
 }
 
 void Members::peerListSetDescription(

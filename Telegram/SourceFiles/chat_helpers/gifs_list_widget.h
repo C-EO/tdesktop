@@ -14,6 +14,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtCore/QTimer>
 
+namespace style {
+struct ComposeIcons;
+} // namespace style
+
 namespace Api {
 struct SendOptions;
 } // namespace Api
@@ -36,7 +40,7 @@ class SessionController;
 } // namespace Window
 
 namespace SendMenu {
-enum class Type;
+struct Details;
 } // namespace SendMenu
 
 namespace Data {
@@ -47,21 +51,29 @@ namespace ChatHelpers {
 
 void AddGifAction(
 	Fn<void(QString, Fn<void()> &&, const style::icon*)> callback,
-	Window::SessionController *controller,
-	not_null<DocumentData*> document);
+	std::shared_ptr<Show> show,
+	not_null<DocumentData*> document,
+	const style::ComposeIcons *iconsOverride = nullptr);
 
 class StickersListFooter;
 struct StickerIcon;
 struct GifSection;
 
-class GifsListWidget
+struct GifsListDescriptor {
+	std::shared_ptr<Show> show;
+	Fn<bool()> paused;
+	const style::EmojiPan *st = nullptr;
+};
+
+class GifsListWidget final
 	: public TabbedSelector::Inner
 	, public InlineBots::Layout::Context {
 public:
 	GifsListWidget(
 		QWidget *parent,
 		not_null<Window::SessionController*> controller,
-		Window::GifPauseReason level);
+		PauseReason level);
+	GifsListWidget(QWidget *parent, GifsListDescriptor &&descriptor);
 
 	rpl::producer<FileChosen> fileChosen() const;
 	rpl::producer<PhotoChosen> photoChosen() const;
@@ -90,7 +102,7 @@ public:
 	rpl::producer<> cancelRequests() const;
 
 	base::unique_qptr<Ui::PopupMenu> fillContextMenu(
-		SendMenu::Type type) override;
+		const SendMenu::Details &details) override;
 
 	~GifsListWidget();
 
@@ -160,9 +172,10 @@ private:
 	void selectInlineResult(
 		int index,
 		Api::SendOptions options,
-		bool forceSend = false);
+		bool forceSend = false,
+		TextWithTags caption = {});
 
-	not_null<Window::SessionController*> _controller;
+	const std::shared_ptr<Show> _show;
 	std::unique_ptr<Ui::TabbedSearch> _search;
 
 	MTP::Sender _api;

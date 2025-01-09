@@ -34,7 +34,7 @@ namespace {
 
 constexpr auto kSharedMediaLimit = 100;
 
-[[nodiscard]] SendMediaReady PreparePeerPhoto(
+[[nodiscard]] std::shared_ptr<FilePrepareResult> PreparePeerPhoto(
 		MTP::DcId dcId,
 		PeerId peerId,
 		QImage &&image) {
@@ -80,25 +80,17 @@ constexpr auto kSharedMediaLimit = 100;
 		MTPVector<MTPVideoSize>(),
 		MTP_int(dcId));
 
-	QString file, filename;
-	int64 filesize = 0;
-	QByteArray data;
-
-	return SendMediaReady(
-		SendMediaType::Photo,
-		file,
-		filename,
-		filesize,
-		data,
-		id,
-		id,
-		u"jpg"_q,
-		peerId,
-		photo,
-		photoThumbs,
-		MTP_documentEmpty(MTP_long(0)),
-		jpeg,
-		0);
+	auto result = MakePreparedFile({
+		.id = id,
+		.type = SendMediaType::Photo,
+	});
+	result->type = SendMediaType::Photo;
+	result->setFileData(jpeg);
+	result->thumbId = id;
+	result->thumbname = "thumb.jpg";
+	result->photo = photo;
+	result->photoThumbs = photoThumbs;
+	return result;
 }
 
 [[nodiscard]] std::optional<MTPVideoSize> PrepareMtpMarkup(
@@ -186,6 +178,7 @@ void PeerPhoto::updateSelf(
 		const auto usedFileReference = photo->fileReference();
 		_api.request(MTPphotos_UpdateProfilePhoto(
 			MTP_flags(0),
+			MTPInputUser(), // bot
 			photo->mtpInput()
 		)).done([=](const MTPphotos_Photo &result) {
 			result.match([&](const MTPDphotos_photo &data) {
@@ -239,7 +232,7 @@ void PeerPhoto::upload(
 			_api.instance().mainDcId(),
 			peer->id,
 			base::take(photo.image));
-		_session->uploader().uploadMedia(fakeId, ready);
+		_session->uploader().upload(fakeId, ready);
 	}
 }
 
@@ -252,6 +245,7 @@ void PeerPhoto::clear(not_null<PhotoData*> photo) {
 	if (self->userpicPhotoId() == photo->id) {
 		_api.request(MTPphotos_UpdateProfilePhoto(
 			MTP_flags(0),
+			MTPInputUser(), // bot
 			MTP_inputPhotoEmpty()
 		)).done([=](const MTPphotos_Photo &result) {
 			self->setPhoto(MTP_userProfilePhotoEmpty());
@@ -276,6 +270,7 @@ void PeerPhoto::clear(not_null<PhotoData*> photo) {
 		if (fallbackPhotoId && (*fallbackPhotoId) == photo->id) {
 			_api.request(MTPphotos_UpdateProfilePhoto(
 				MTP_flags(MTPphotos_UpdateProfilePhoto::Flag::f_fallback),
+				MTPInputUser(), // bot
 				MTP_inputPhotoEmpty()
 			)).send();
 			_session->storage().add(Storage::UserPhotosSetBack(
@@ -321,6 +316,7 @@ void PeerPhoto::set(not_null<PeerData*> peer, not_null<PhotoData*> photo) {
 	if (peer == _session->user()) {
 		_api.request(MTPphotos_UpdateProfilePhoto(
 			MTP_flags(0),
+			MTPInputUser(), // bot
 			photo->mtpInput()
 		)).done([=](const MTPphotos_Photo &result) {
 			result.match([&](const MTPDphotos_photo &data) {
@@ -363,13 +359,21 @@ void PeerPhoto::ready(
 			done();
 		}
 	};
-	if (peer->isSelf()) {
+	const auto botUserInput = [&] {
+		const auto user = peer->asUser();
+		return (user && user->botInfo && user->botInfo->canEditInformation)
+			? std::make_optional<MTPInputUser>(user->inputUser)
+			: std::nullopt;
+	}();
+	if (peer->isSelf() || botUserInput) {
 		using Flag = MTPphotos_UploadProfilePhoto::Flag;
 		const auto none = MTPphotos_UploadProfilePhoto::Flags(0);
 		_api.request(MTPphotos_UploadProfilePhoto(
 			MTP_flags((file ? Flag::f_file : none)
+				| (botUserInput ? Flag::f_bot : none)
 				| (videoSize ? Flag::f_video_emoji_markup : none)
 				| ((type == UploadType::Fallback) ? Flag::f_fallback : none)),
+			botUserInput ? (*botUserInput) : MTPInputUser(), // bot
 			file ? (*file) : MTPInputFile(),
 			MTPInputFile(), // video
 			MTPdouble(), // video_start_ts
@@ -499,40 +503,60 @@ void PeerPhoto::requestUserPhotos(
 	_userPhotosRequests.emplace(user, requestId);
 }
 
+auto PeerPhoto::emojiList(EmojiListType type) -> EmojiListData & {
+	switch (type) {
+	case EmojiListType::Profile: return _profileEmojiList;
+	case EmojiListType::Group: return _groupEmojiList;
+	case EmojiListType::Background: return _backgroundEmojiList;
+	case EmojiListType::NoChannelStatus: return _noChannelStatusEmojiList;
+	}
+	Unexpected("Type in PeerPhoto::emojiList.");
+}
+
+auto PeerPhoto::emojiList(EmojiListType type) const
+-> const EmojiListData & {
+	return const_cast<PeerPhoto*>(this)->emojiList(type);
+}
+
 void PeerPhoto::requestEmojiList(EmojiListType type) {
-	if (_requestIdEmojiList) {
+	auto &list = emojiList(type);
+	if (list.requestId) {
 		return;
 	}
-	const auto isGroup = (type == EmojiListType::Group);
-	const auto d = [=](const MTPEmojiList &result) {
-		_requestIdEmojiList = 0;
-		result.match([](const MTPDemojiListNotModified &data) {
-		}, [&](const MTPDemojiList &data) {
-			auto &list = isGroup ? _profileEmojiList : _groupEmojiList;
-			list = ranges::views::all(
-				data.vdocument_id().v
-			) | ranges::views::transform(&MTPlong::v) | ranges::to_vector;
-		});
+	const auto send = [&](auto &&request) {
+		return _api.request(
+			std::move(request)
+		).done([=](const MTPEmojiList &result) {
+			auto &list = emojiList(type);
+			list.requestId = 0;
+			result.match([](const MTPDemojiListNotModified &data) {
+			}, [&](const MTPDemojiList &data) {
+				list.list = ranges::views::all(
+					data.vdocument_id().v
+				) | ranges::views::transform(
+					&MTPlong::v
+				) | ranges::to_vector;
+			});
+		}).fail([=] {
+			emojiList(type).requestId = 0;
+		}).send();
 	};
-	const auto f = [=] { _requestIdEmojiList = 0; };
-	_requestIdEmojiList = isGroup
-		? _api.request(
-			MTPaccount_GetDefaultGroupPhotoEmojis()
-		).done(d).fail(f).send()
-		: _api.request(
-			MTPaccount_GetDefaultProfilePhotoEmojis()
-		).done(d).fail(f).send();
+	list.requestId = (type == EmojiListType::Profile)
+		? send(MTPaccount_GetDefaultProfilePhotoEmojis())
+		: (type == EmojiListType::Group)
+		? send(MTPaccount_GetDefaultGroupPhotoEmojis())
+		: (type == EmojiListType::NoChannelStatus)
+		? send(MTPaccount_GetChannelRestrictedStatusEmojis())
+		: send(MTPaccount_GetDefaultBackgroundEmojis());
 }
 
 rpl::producer<PeerPhoto::EmojiList> PeerPhoto::emojiListValue(
 		EmojiListType type) {
-	auto &list = (type == EmojiListType::Group)
-		? _profileEmojiList
-		: _groupEmojiList;
-	if (list.current().empty() && !_requestIdEmojiList) {
+	auto &list = emojiList(type);
+	if (list.list.current().empty() && !list.requestId) {
 		requestEmojiList(type);
 	}
-	return list.value();
+	return list.list.value();
 }
 
 // Non-personal photo in case a personal photo is set.

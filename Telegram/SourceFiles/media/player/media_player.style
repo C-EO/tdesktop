@@ -29,6 +29,7 @@ MediaPlayerButton {
 
 MediaSpeedMenu {
 	dropdown: DropdownMenu;
+	qualityMenu: Menu;
 	activeCheck: icon;
 	activeCheckSkip: pixels;
 	sliderStyle: TextStyle;
@@ -106,7 +107,7 @@ mediaPlayerRepeatButton: IconButton {
 	icon: icon {
 		{ "player/player_repeat", mediaPlayerActiveFg }
 	};
-	iconPosition: point(3px, 6px);
+	iconPosition: point(2px, 5px);
 
 	rippleAreaPosition: point(2px, 6px);
 	rippleAreaSize: 24px;
@@ -135,6 +136,10 @@ mediaPlayerReverseDisabledIconOver: icon {
 mediaPlayerShuffleIcon: icon {
 	{ "player/player_shuffle", mediaPlayerActiveFg }
 };
+mediaPlayerOrderButton: IconButton(mediaPlayerRepeatButton) {
+	iconPosition: point(2px, 6px);
+	rippleAreaPosition: point(2px, 6px);
+}
 mediaPlayerRepeatDisabledRippleBg: windowBgOver;
 
 mediaPlayerPlayButton: IconButton(mediaPlayerRepeatButton) {
@@ -161,16 +166,20 @@ mediaPlayerMenu: DropdownMenu(defaultDropdownMenu) {
 }
 mediaPlayerMenuCheck: icon {{ "player/player_check", mediaPlayerActiveFg }};
 
+mediaPlayerSpeedMenuInner: Menu(menuWithIcons) {
+	separator: MenuSeparator(defaultMenuSeparator) {
+		padding: margins(0px, 4px, 0px, 4px);
+		width: 6px;
+	}
+	itemPadding: margins(54px, 7px, 54px, 9px);
+	itemFgDisabled: mediaPlayerActiveFg;
+}
 mediaPlayerSpeedMenu: MediaSpeedMenu {
 	dropdown: DropdownMenu(mediaPlayerMenu) {
-		menu: Menu(menuWithIcons) {
-			separator: MenuSeparator(defaultMenuSeparator) {
-				padding: margins(0px, 4px, 0px, 4px);
-				width: 6px;
-			}
-			itemPadding: margins(54px, 7px, 54px, 9px);
-			itemFgDisabled: mediaPlayerActiveFg;
-		}
+		menu: mediaPlayerSpeedMenuInner;
+	}
+	qualityMenu: Menu(mediaPlayerSpeedMenuInner) {
+		itemPadding: margins(17px, 7px, 54px, 9px);
 	}
 	activeCheck: mediaPlayerMenuCheck;
 	activeCheckSkip: 8px;
@@ -233,7 +242,7 @@ mediaPlayerVolumeToggle: IconButton(mediaPlayerRepeatButton) {
 		{ "player/player_mini_full", mediaPlayerActiveFg },
 	};
 	iconPosition: point(5px, 6px);
-	rippleAreaPosition: point(4px, 5px);
+	rippleAreaPosition: point(5px, 6px);
 }
 mediaPlayerVolumeMargin: 10px;
 mediaPlayerVolumeSize: size(27px, 100px);
@@ -267,9 +276,9 @@ mediaPlayerClose: IconButton(mediaPlayerRepeatButton) {
 	width: 39px;
 	icon: icon {{ "player/panel_close", menuIconFg }};
 	iconOver: icon {{ "player/panel_close", menuIconFgOver }};
-	iconPosition: point(5px, 6px);
+	iconPosition: point(4px, 6px);
 
-	rippleAreaPosition: point(4px, 5px);
+	rippleAreaPosition: point(4px, 6px);
 	ripple: RippleAnimation(defaultRippleAnimation) {
 		color: windowBgOver;
 	}

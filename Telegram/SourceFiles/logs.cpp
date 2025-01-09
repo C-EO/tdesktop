@@ -151,8 +151,8 @@ private:
 					LOG(("Could not delete '%1' file to start new logging: %2").arg(to->fileName(), to->errorString()));
 					return false;
 				}
-				if (!QFile(files[type]->fileName()).copy(to->fileName())) { // don't close files[type] yet
-					LOG(("Could not copy '%1' to '%2' to start new logging: %3").arg(files[type]->fileName(), to->fileName(), to->errorString()));
+				if (auto from = QFile(files[type]->fileName()); !from.copy(to->fileName())) { // don't close files[type] yet
+					LOG(("Could not copy '%1' to '%2' to start new logging: %3").arg(files[type]->fileName(), to->fileName(), from.errorString()));
 					return false;
 				}
 				if (to->open(mode | QIODevice::Append)) {
@@ -279,7 +279,10 @@ namespace {
 
 bool DebugModeEnabled = false;
 
-void MoveOldDataFiles(const QString &wasDir) {
+[[maybe_unused]] void MoveOldDataFiles(const QString &wasDir) {
+	if (wasDir.isEmpty()) {
+		return;
+	}
 	QFile data(wasDir + "data"), dataConfig(wasDir + "data_config"), tdataConfig(wasDir + "tdata/config");
 	if (data.exists() && dataConfig.exists() && !QFileInfo::exists(cWorkingDir() + "data") && !QFileInfo::exists(cWorkingDir() + "data_config")) { // move to home dir
 		LOG(("Copying data to home dir '%1' from '%2'").arg(cWorkingDir(), wasDir));
@@ -332,90 +335,47 @@ void SetDebugEnabled(bool enabled) {
 }
 
 bool DebugEnabled() {
-#if defined _DEBUG
-	return true;
-#else
 	return DebugModeEnabled;
-#endif
 }
 
 bool WritingEntry() {
 	return WritingEntryFlag;
 }
 
-void start(not_null<Core::Launcher*> launcher) {
+void start() {
 	Assert(LogsData == nullptr);
 
-	if (!launcher->checkPortableVersionFolder()) {
+	auto &launcher = Core::Launcher::Instance();
+	if (!launcher.checkPortableVersionFolder()) {
 		return;
 	}
 
-	auto initialWorkingDir = QDir(cWorkingDir()).absolutePath() + '/';
-	auto moveOldDataFrom = QString();
-	auto workingDirChosen = false;
-
-	if (cAlphaVersion()) {
-		workingDirChosen = true;
-	} else {
-
-#ifdef Q_OS_UNIX
-
-		if (!cWorkingDir().isEmpty()) {
-			// This value must come from TelegramForcePortable
-			// or from the "-workdir" command line argument.
-			cForceWorkingDir(cWorkingDir());
-			workingDirChosen = true;
-		} else {
-#if !defined _DEBUG || defined OS_MAC_STORE
-			cForceWorkingDir(psAppDataPath());
-			workingDirChosen = true;
-#endif // !_DEBUG || OS_MAC_STORE
-		}
-
-#if !defined Q_OS_MAC && !defined _DEBUG // fix first version
-		moveOldDataFrom = initialWorkingDir;
-#endif // !Q_OS_MAC && !_DEBUG
-
-#elif defined Q_OS_WINRT // Q_OS_UNIX
-
-		cForceWorkingDir(psAppDataPath());
-		workingDirChosen = true;
-
-#elif defined OS_WIN_STORE // Q_OS_UNIX || Q_OS_WINRT
-
-		cForceWorkingDir(psAppDataPath());
-		workingDirChosen = true;
-
-#elif defined Q_OS_WIN
-
-		if (!cWorkingDir().isEmpty()) {
-			// This value must come from TelegramForcePortable
-			// or from the "-workdir" command line argument.
-			cForceWorkingDir(cWorkingDir());
-			workingDirChosen = true;
-		}
-
-#endif // Q_OS_UNIX || Q_OS_WINRT || OS_WIN_STORE
-
-	}
-
 	LogsData = new LogsDataFields();
-	if (!workingDirChosen) {
+	if (cWorkingDir().isEmpty()) {
+#if (!defined Q_OS_WIN && !defined _DEBUG) || defined Q_OS_WINRT || defined OS_WIN_STORE || defined OS_MAC_STORE
+		cForceWorkingDir(psAppDataPath());
+#else // (!Q_OS_WIN && !_DEBUG) || Q_OS_WINRT || OS_WIN_STORE || OS_MAC_STORE
 		cForceWorkingDir(cExeDir());
 		if (!LogsData->openMain()) {
 			cForceWorkingDir(psAppDataPath());
 		}
+#endif // (!Q_OS_WIN && !_DEBUG) || Q_OS_WINRT || OS_WIN_STORE || OS_MAC_STORE
+	}
+
+	if (launcher.validateCustomWorkingDir()) {
+		delete LogsData;
+		LogsData = new LogsDataFields();
 	}
 
 // WinRT build requires the working dir to stay the same for plugin loading.
 #ifndef Q_OS_WINRT
-	QDir().setCurrent(cWorkingDir());
+	QDir::setCurrent(cWorkingDir());
 #endif // !Q_OS_WINRT
 
 	QDir().mkpath(cWorkingDir() + u"tdata"_q);
 
-	launcher->workingFolderReady();
-	CrashReports::StartCatching(launcher);
+	launcher.workingFolderReady();
+	CrashReports::StartCatching();
 
 	if (!LogsData->openMain()) {
 		delete LogsData;
@@ -428,9 +388,9 @@ void start(not_null<Core::Launcher*> launcher) {
 		).arg(cAlphaVersion()
 		).arg(Logs::b(DebugEnabled())));
 	LOG(("Executable dir: %1, name: %2").arg(cExeDir(), cExeName()));
-	LOG(("Initial working dir: %1").arg(initialWorkingDir));
+	LOG(("Initial working dir: %1").arg(launcher.initialWorkingDir()));
 	LOG(("Working dir: %1").arg(cWorkingDir()));
-	LOG(("Command line: %1").arg(launcher->argumentsString()));
+	LOG(("Command line: %1").arg(launcher.arguments().join(' ')));
 
 	if (!LogsData) {
 		LOG(("FATAL: Could not open '%1' for writing log!"
@@ -440,12 +400,11 @@ void start(not_null<Core::Launcher*> launcher) {
 
 #ifdef Q_OS_WIN
 	if (cWorkingDir() == psAppDataPath()) { // fix old "Telegram Win (Unofficial)" version
-		moveOldDataFrom = psAppDataPathOld();
+		MoveOldDataFiles(psAppDataPathOld());
 	}
+#elif !defined Q_OS_MAC && !defined _DEBUG // fix first version
+	MoveOldDataFiles(launcher.initialWorkingDir());
 #endif
-	if (!moveOldDataFrom.isEmpty()) {
-		MoveOldDataFiles(moveOldDataFrom);
-	}
 
 	if (LogsInMemory) {
 		Assert(LogsInMemory != DeletedLogsInMemory);
@@ -556,7 +515,7 @@ void writeDebug(const QString &v) {
 	//OutputDebugString(reinterpret_cast<const wchar_t *>(msg.utf16()));
 #elif defined Q_OS_MAC
 	//objc_outputDebugString(msg);
-#elif defined Q_OS_UNIX && defined _DEBUG
+#elif defined _DEBUG
 	//std::cout << msg.toUtf8().constData();
 #endif
 }

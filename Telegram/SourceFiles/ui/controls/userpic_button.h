@@ -94,6 +94,7 @@ public:
 		bool enabled,
 		Fn<void(ChosenImage)> chosen);
 	void showSavedMessagesOnSelf(bool enabled);
+	void forceForumShape(bool force);
 
 	// Role::ChoosePhoto or Role::ChangePhoto
 	[[nodiscard]] rpl::producer<ChosenImage> chosenImages() const {
@@ -135,8 +136,8 @@ private:
 	void setCursorInChangeOverlay(bool inOverlay);
 	void updateCursor();
 	void updateVideo();
-	bool showSavedMessages() const;
-	bool showRepliesMessages() const;
+	[[nodiscard]] bool showSavedMessages() const;
+	[[nodiscard]] bool showRepliesMessages() const;
 	void checkStreamedIsStarted();
 	bool createStreamingObjects(not_null<PhotoData*> photo);
 	void clearStreaming();

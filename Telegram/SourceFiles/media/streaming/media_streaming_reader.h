@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "media/streaming/media_streaming_common.h"
 #include "media/streaming/media_streaming_loader.h"
 #include "base/bytes.h"
 #include "base/weak_ptr.h"
@@ -78,6 +79,7 @@ public:
 	void cancelForDownloader(
 		not_null<Storage::StreamedFileDownloader*> downloader);
 	void continueDownloaderFromMainThread();
+	[[nodiscard]] rpl::producer<SpeedEstimate> speedEstimate() const;
 
 	~Reader();
 
@@ -276,6 +278,9 @@ private:
 	rpl::lifetime _lifetime;
 
 };
+
+[[nodiscard]] QByteArray SerializeComplexPartsMap(
+	const base::flat_map<uint32, QByteArray> &parts);
 
 } // namespace Streaming
 } // namespace Media

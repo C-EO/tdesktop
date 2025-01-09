@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "data/data_peer.h"
 #include "data/data_session.h"
+#include "data/data_user.h"
 #include "data/stickers/data_custom_emoji.h"
 #include "info/profile/info_profile_values.h"
 #include "info/profile/info_profile_emoji_status_panel.h"
@@ -22,6 +23,27 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Info::Profile {
 namespace {
 
+[[nodiscard]] rpl::producer<Badge::Content> ContentForPeer(
+		not_null<PeerData*> peer) {
+	const auto statusOnlyForPremium = peer->isUser();
+	return rpl::combine(
+		BadgeValue(peer),
+		EmojiStatusIdValue(peer)
+	) | rpl::map([=](BadgeType badge, DocumentId emojiStatusId) {
+		if (statusOnlyForPremium && badge != BadgeType::Premium) {
+			emojiStatusId = 0;
+		} else if (emojiStatusId && badge == BadgeType::None) {
+			badge = BadgeType::Premium;
+		}
+		return Badge::Content{ badge, emojiStatusId };
+	});
+}
+
+[[nodiscard]] bool HasPremiumClick(const Badge::Content &content) {
+	return content.badge == BadgeType::Premium
+		|| (content.badge == BadgeType::Verified && content.emojiStatusId);
+}
+
 } // namespace
 
 Badge::Badge(
@@ -32,56 +54,84 @@ Badge::Badge(
 	Fn<bool()> animationPaused,
 	int customStatusLoopsLimit,
 	base::flags<BadgeType> allowed)
+: Badge(
+	parent,
+	st,
+	&peer->session(),
+	ContentForPeer(peer),
+	emojiStatusPanel,
+	std::move(animationPaused),
+	customStatusLoopsLimit,
+	allowed) {
+}
+
+Badge::Badge(
+	not_null<QWidget*> parent,
+	const style::InfoPeerBadge &st,
+	not_null<Main::Session*> session,
+	rpl::producer<Content> content,
+	EmojiStatusPanel *emojiStatusPanel,
+	Fn<bool()> animationPaused,
+	int customStatusLoopsLimit,
+	base::flags<BadgeType> allowed)
 : _parent(parent)
 , _st(st)
-, _peer(peer)
+, _session(session)
 , _emojiStatusPanel(emojiStatusPanel)
 , _customStatusLoopsLimit(customStatusLoopsLimit)
 , _allowed(allowed)
 , _animationPaused(std::move(animationPaused)) {
-	rpl::combine(
-		BadgeValue(peer),
-		EmojiStatusIdValue(peer)
-	) | rpl::start_with_next([=](BadgeType badge, DocumentId emojiStatusId) {
-		setBadge(badge, emojiStatusId);
+	std::move(
+		content
+	) | rpl::start_with_next([=](Content content) {
+		setContent(content);
 	}, _lifetime);
 }
+
+Badge::~Badge() = default;
 
 Ui::RpWidget *Badge::widget() const {
 	return _view.data();
 }
 
-void Badge::setBadge(BadgeType badge, DocumentId emojiStatusId) {
-	if (!(_allowed & badge)
-		|| (!_peer->session().premiumBadgesShown()
-			&& badge == BadgeType::Premium)) {
-		badge = BadgeType::None;
+void Badge::setContent(Content content) {
+	if (!(_allowed & content.badge)
+		|| (!_session->premiumBadgesShown()
+			&& content.badge == BadgeType::Premium)) {
+		content.badge = BadgeType::None;
 	}
-	if (!(_allowed & badge)) {
-		badge = BadgeType::None;
+	if (!(_allowed & content.badge)) {
+		content.badge = BadgeType::None;
 	}
-	if (badge != BadgeType::Premium) {
-		emojiStatusId = 0;
-	}
-	if (_badge == badge && _emojiStatusId == emojiStatusId) {
+	if (_content == content) {
 		return;
 	}
-	_badge = badge;
-	_emojiStatusId = emojiStatusId;
+	_content = content;
 	_emojiStatus = nullptr;
 	_view.destroy();
-	if (_badge == BadgeType::None) {
+	if (_content.badge == BadgeType::None) {
 		_updated.fire({});
 		return;
 	}
 	_view.create(_parent);
 	_view->show();
-	switch (_badge) {
+	switch (_content.badge) {
 	case BadgeType::Verified:
+	case BadgeType::BotVerified:
 	case BadgeType::Premium: {
-		if (_emojiStatusId) {
-			_emojiStatus = _peer->owner().customEmojiManager().create(
-				_emojiStatusId,
+		const auto id = _content.emojiStatusId;
+		const auto emoji = id
+			? (Data::FrameSizeFromTag(sizeTag())
+				/ style::DevicePixelRatio())
+			: 0;
+		const auto icon = (_content.badge == BadgeType::Verified)
+			? &_st.verified
+			: id
+			? nullptr
+			: &_st.premium;
+		if (id) {
+			_emojiStatus = _session->data().customEmojiManager().create(
+				id,
 				[raw = _view.data()] { raw->update(); },
 				sizeTag());
 			if (_customStatusLoopsLimit > 0) {
@@ -89,11 +139,13 @@ void Badge::setBadge(BadgeType badge, DocumentId emojiStatusId) {
 					std::move(_emojiStatus),
 					_customStatusLoopsLimit);
 			}
-			const auto emoji = Data::FrameSizeFromTag(sizeTag())
-				/ style::DevicePixelRatio();
-			_view->resize(emoji, emoji);
-			_view->paintRequest(
-			) | rpl::start_with_next([=, check = _view.data()]{
+		}
+		const auto width = emoji + (icon ? icon->width() : 0);
+		const auto height = std::max(emoji, icon ? icon->height() : 0);
+		_view->resize(width, height);
+		_view->paintRequest(
+		) | rpl::start_with_next([=, check = _view.data()]{
+			if (_emojiStatus) {
 				auto args = Ui::Text::CustomEmoji::Context{
 					.textColor = _st.premiumFg->c,
 					.now = crl::now(),
@@ -105,22 +157,16 @@ void Badge::setBadge(BadgeType badge, DocumentId emojiStatusId) {
 					Painter p(check);
 					_emojiStatus->paint(p, args);
 				}
-			}, _view->lifetime());
-		} else {
-			const auto icon = (_badge == BadgeType::Verified)
-				? &_st.verified
-				: &_st.premium;
-			_view->resize(icon->size());
-			_view->paintRequest(
-			) | rpl::start_with_next([=, check = _view.data()]{
+			}
+			if (icon) {
 				Painter p(check);
-				icon->paint(p, 0, 0, check->width());
-			}, _view->lifetime());
-		}
+				icon->paint(p, emoji, 0, check->width());
+			}
+		}, _view->lifetime());
 	} break;
 	case BadgeType::Scam:
 	case BadgeType::Fake: {
-		const auto fake = (_badge == BadgeType::Fake);
+		const auto fake = (_content.badge == BadgeType::Fake);
 		const auto size = Ui::ScamBadgeSize(fake);
 		const auto skip = st::infoVerifiedCheckPosition.x();
 		_view->resize(
@@ -139,7 +185,7 @@ void Badge::setBadge(BadgeType badge, DocumentId emojiStatusId) {
 	} break;
 	}
 
-	if (_badge != BadgeType::Premium || !_premiumClickCallback) {
+	if (!HasPremiumClick(_content) || !_premiumClickCallback) {
 		_view->setAttribute(Qt::WA_TransparentForMouseEvents);
 	} else {
 		_view->setClickedCallback(_premiumClickCallback);
@@ -150,7 +196,7 @@ void Badge::setBadge(BadgeType badge, DocumentId emojiStatusId) {
 
 void Badge::setPremiumClickCallback(Fn<void()> callback) {
 	_premiumClickCallback = std::move(callback);
-	if (_view && _badge == BadgeType::Premium) {
+	if (_view && HasPremiumClick(_content)) {
 		if (!_premiumClickCallback) {
 			_view->setAttribute(Qt::WA_TransparentForMouseEvents);
 		} else {
@@ -169,7 +215,8 @@ void Badge::move(int left, int top, int bottom) {
 		return;
 	}
 	const auto star = !_emojiStatus
-		&& (_badge == BadgeType::Premium || _badge == BadgeType::Verified);
+		&& (_content.badge == BadgeType::Premium
+			|| _content.badge == BadgeType::Verified);
 	const auto fake = !_emojiStatus && !star;
 	const auto skip = fake ? 0 : _st.position.x();
 	const auto badgeLeft = left + skip;
