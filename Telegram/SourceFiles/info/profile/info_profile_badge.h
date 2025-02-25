@@ -18,10 +18,18 @@ namespace Data {
 enum class CustomEmojiSizeTag : uchar;
 } // namespace Data
 
+namespace Main {
+class Session;
+} // namespace Main
+
 namespace Ui {
 class RpWidget;
 class AbstractButton;
 } // namespace Ui
+
+namespace Ui::Text {
+class CustomEmoji;
+} // namespace Ui::Text
 
 namespace Info::Profile {
 
@@ -30,22 +38,33 @@ class EmojiStatusPanel;
 enum class BadgeType {
 	None = 0x00,
 	Verified = 0x01,
-	Premium = 0x02,
-	Scam = 0x04,
-	Fake = 0x08,
+	BotVerified = 0x02,
+	Premium = 0x04,
+	Scam = 0x08,
+	Fake = 0x10,
 };
 inline constexpr bool is_flag_type(BadgeType) { return true; }
 
 class Badge final {
 public:
+	struct Content {
+		BadgeType badge = BadgeType::None;
+		EmojiStatusId emojiStatusId;
+
+		friend inline bool operator==(Content, Content) = default;
+	};
 	Badge(
 		not_null<QWidget*> parent,
 		const style::InfoPeerBadge &st,
-		not_null<PeerData*> peer,
+		not_null<Main::Session*> session,
+		rpl::producer<Content> content,
 		EmojiStatusPanel *emojiStatusPanel,
 		Fn<bool()> animationPaused,
 		int customStatusLoopsLimit = 0,
-		base::flags<BadgeType> allowed = base::flags<BadgeType>::from_raw(-1));
+		base::flags<BadgeType> allowed
+			= base::flags<BadgeType>::from_raw(-1));
+
+	~Badge();
 
 	[[nodiscard]] Ui::RpWidget *widget() const;
 
@@ -56,17 +75,16 @@ public:
 	[[nodiscard]] Data::CustomEmojiSizeTag sizeTag() const;
 
 private:
-	void setBadge(BadgeType badge, DocumentId emojiStatusId);
+	void setContent(Content content);
 
 	const not_null<QWidget*> _parent;
 	const style::InfoPeerBadge &_st;
-	const not_null<PeerData*> _peer;
+	const not_null<Main::Session*> _session;
 	EmojiStatusPanel *_emojiStatusPanel = nullptr;
 	const int _customStatusLoopsLimit = 0;
-	DocumentId _emojiStatusId = 0;
 	std::unique_ptr<Ui::Text::CustomEmoji> _emojiStatus;
 	base::flags<BadgeType> _allowed;
-	BadgeType _badge = BadgeType();
+	Content _content;
 	Fn<void()> _premiumClickCallback;
 	Fn<bool()> _animationPaused;
 	object_ptr<Ui::AbstractButton> _view = { nullptr };
@@ -74,5 +92,10 @@ private:
 	rpl::lifetime _lifetime;
 
 };
+
+[[nodiscard]] rpl::producer<Badge::Content> BadgeContentForPeer(
+	not_null<PeerData*> peer);
+[[nodiscard]] rpl::producer<Badge::Content> VerifiedContentForPeer(
+	not_null<PeerData*> peer);
 
 } // namespace Info::Profile

@@ -13,7 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/wrap/vertical_layout.h"
 #include "ui/widgets/labels.h"
 #include "ui/widgets/checkbox.h"
-#include "ui/widgets/input_fields.h"
+#include "ui/widgets/fields/input_field.h"
 #include "ui/text/format_values.h" // Ui::FormatPhone
 #include "ui/text/text_utilities.h"
 #include "info/profile/info_profile_cover.h"
@@ -61,16 +61,15 @@ void SendRequest(
 			user->nameOrPhone,
 			user->username());
 		user->session().api().applyUpdates(result);
-		if (const auto settings = user->settings()) {
-			const auto flags = PeerSetting::AddContact
-				| PeerSetting::BlockContact
-				| PeerSetting::ReportSpam;
-			user->setSettings(*settings & ~flags);
+		if (const auto settings = user->barSettings()) {
+			const auto flags = PeerBarSetting::AddContact
+				| PeerBarSetting::BlockContact
+				| PeerBarSetting::ReportSpam;
+			user->setBarSettings(*settings & ~flags);
 		}
 		if (box) {
 			if (!wasContact) {
-				Ui::Toast::Show(
-					Ui::BoxShow(box.data()).toastParent(),
+				box->showToast(
 					tr::lng_new_contact_add_done(tr::now, lt_user, first));
 			}
 			box->closeBox();
@@ -240,8 +239,8 @@ void Controller::initNameFields(
 			_save();
 		}
 	};
-	QObject::connect(first, &Ui::InputField::submitted, submit);
-	QObject::connect(last, &Ui::InputField::submitted, submit);
+	first->submits() | rpl::start_with_next(submit, first->lifetime());
+	last->submits() | rpl::start_with_next(submit, last->lifetime());
 	first->setMaxLength(Ui::EditPeer::kMaxUserFirstLastName);
 	first->setMaxLength(Ui::EditPeer::kMaxUserFirstLastName);
 }
@@ -259,9 +258,9 @@ void Controller::setupWarning() {
 }
 
 void Controller::setupSharePhoneNumber() {
-	const auto settings = _user->settings();
+	const auto settings = _user->barSettings();
 	if (!settings
-		|| !((*settings) & PeerSetting::NeedContactsException)) {
+		|| !((*settings) & PeerBarSetting::NeedContactsException)) {
 		return;
 	}
 	_sharePhone = _box->addRow(

@@ -8,16 +8,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/chat/attach/attach_abstract_single_media_preview.h"
 
 #include "editor/photo_editor_common.h"
+#include "lang/lang_keys.h"
 #include "ui/chat/attach/attach_controls.h"
 #include "ui/chat/attach/attach_prepare.h"
-#include "ui/image/image_prepare.h"
 #include "ui/effects/spoiler_mess.h"
-#include "ui/widgets/popup_menu.h"
+#include "ui/image/image_prepare.h"
 #include "ui/painter.h"
 #include "ui/power_saving.h"
-#include "lang/lang_keys.h"
+#include "ui/ui_utility.h"
+#include "ui/widgets/popup_menu.h"
 #include "styles/style_boxes.h"
 #include "styles/style_chat.h"
+#include "styles/style_chat_helpers.h"
 #include "styles/style_layers.h"
 #include "styles/style_menu_icons.h"
 
@@ -30,8 +32,12 @@ constexpr auto kMinPreviewWidth = 20;
 
 AbstractSingleMediaPreview::AbstractSingleMediaPreview(
 	QWidget *parent,
-	AttachControls::Type type)
+	const style::ComposeControls &st,
+	AttachControls::Type type,
+	Fn<bool(AttachActionType)> actionAllowed)
 : AbstractSinglePreview(parent)
+, _st(st)
+, _actionAllowed(std::move(actionAllowed))
 , _minThumbH(st::sendBoxAlbumGroupSize.height()
 	+ st::sendBoxAlbumGroupSkipTop * 2)
 , _controls(base::make_unique_q<AttachControlsWidget>(this, type)) {
@@ -49,6 +55,14 @@ rpl::producer<> AbstractSingleMediaPreview::editRequests() const {
 
 rpl::producer<> AbstractSingleMediaPreview::modifyRequests() const {
 	return _photoEditorRequests.events();
+}
+
+rpl::producer<> AbstractSingleMediaPreview::editCoverRequests() const {
+	return _editCoverRequests.events();
+}
+
+rpl::producer<> AbstractSingleMediaPreview::clearCoverRequests() const {
+	return _clearCoverRequests.events();
 }
 
 void AbstractSingleMediaPreview::setSendWay(SendFilesWay way) {
@@ -75,6 +89,14 @@ bool AbstractSingleMediaPreview::canHaveSpoiler() const {
 	return supportsSpoilers();
 }
 
+rpl::producer<bool> AbstractSingleMediaPreview::spoileredChanges() const {
+	return _spoileredChanges.events();
+}
+
+QImage AbstractSingleMediaPreview::generatePriceTagBackground() const {
+	return (_previewBlurred.isNull() ? _preview : _previewBlurred).toImage();
+}
+
 void AbstractSingleMediaPreview::preparePreview(QImage preview) {
 	auto maxW = 0;
 	auto maxH = 0;
@@ -98,7 +120,7 @@ void AbstractSingleMediaPreview::preparePreview(QImage preview) {
 		preview = Images::Prepare(
 			std::move(preview),
 			QSize(maxW, maxH) * ratio,
-			{ .options = Images::Option::Blur, .outer = { maxW, maxH } });
+			{ .outer = { maxW, maxH } });
 	}
 	auto originalWidth = preview.width();
 	auto originalHeight = preview.height();
@@ -173,7 +195,7 @@ void AbstractSingleMediaPreview::paintEvent(QPaintEvent *e) {
 				_previewTop,
 				_previewLeft - padding.left(),
 				_previewHeight,
-				st::confirmBg);
+				_st.files.confirmBg);
 		}
 		if ((_previewLeft + _previewWidth) < (width() - padding.right())) {
 			p.fillRect(
@@ -181,7 +203,7 @@ void AbstractSingleMediaPreview::paintEvent(QPaintEvent *e) {
 				_previewTop,
 				width() - padding.right() - _previewLeft - _previewWidth,
 				_previewHeight,
-				st::confirmBg);
+				_st.files.confirmBg);
 		}
 		if (_previewTop > 0) {
 			p.fillRect(
@@ -189,7 +211,7 @@ void AbstractSingleMediaPreview::paintEvent(QPaintEvent *e) {
 				0,
 				width() - padding.right() - padding.left(),
 				height(),
-				st::confirmBg);
+				_st.files.confirmBg);
 		}
 	}
 
@@ -259,20 +281,33 @@ void AbstractSingleMediaPreview::applyCursor(style::cursor cursor) {
 }
 
 void AbstractSingleMediaPreview::showContextMenu(QPoint position) {
-	if (!_sendWay.sendImagesAsPhotos() || !supportsSpoilers()) {
-		return;
-	}
 	_menu = base::make_unique_q<Ui::PopupMenu>(
 		this,
-		st::popupMenuWithIcons);
+		_st.tabbed.menu);
 
-	const auto spoilered = hasSpoiler();
-	_menu->addAction(spoilered
-		? tr::lng_context_disable_spoiler(tr::now)
-		: tr::lng_context_spoiler_effect(tr::now), [=] {
-		setSpoiler(!spoilered);
-	}, spoilered ? &st::menuIconSpoilerOff : &st::menuIconSpoiler);
+	const auto &icons = _st.tabbed.icons;
+	if (_actionAllowed(AttachActionType::ToggleSpoiler)
+		&& _sendWay.sendImagesAsPhotos()
+		&& supportsSpoilers()) {
+		const auto spoilered = hasSpoiler();
+		_menu->addAction(spoilered
+			? tr::lng_context_disable_spoiler(tr::now)
+			: tr::lng_context_spoiler_effect(tr::now), [=] {
+			setSpoiler(!spoilered);
+			_spoileredChanges.fire_copy(!spoilered);
+		}, spoilered ? &icons.menuSpoilerOff : &icons.menuSpoiler);
+	}
+	if (_actionAllowed(AttachActionType::EditCover)) {
+		_menu->addAction(tr::lng_context_edit_cover(tr::now), [=] {
+			_editCoverRequests.fire({});
+		}, &st::menuIconEdit);
 
+		if (_actionAllowed(AttachActionType::ClearCover)) {
+			_menu->addAction(tr::lng_context_clear_cover(tr::now), [=] {
+				_clearCoverRequests.fire({});
+			}, &st::menuIconCancel);
+		}
+	}
 	if (_menu->empty()) {
 		_menu = nullptr;
 	} else {

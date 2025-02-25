@@ -40,9 +40,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtGui/QWindow>
 
-#ifndef DESKTOP_APP_DISABLE_DBUS_INTEGRATION
-#include <giomm.h>
-#endif // !DESKTOP_APP_DISABLE_DBUS_INTEGRATION
+#if __has_include(<gio/gio.hpp>)
+#include <gio/gio.hpp>
+#endif // __has_include(<gio/gio.hpp>)
 
 namespace Window {
 namespace Notifications {
@@ -66,7 +66,15 @@ constexpr auto kSystemAlertDuration = crl::time(0);
 	return result;
 }
 
-QString TextWithPermanentSpoiler(const TextWithEntities &textWithEntities) {
+[[nodiscard]] QString TextWithForwardedChar(
+		const QString &text,
+		bool forwarded) {
+	static const auto result = QString::fromUtf8("\xE2\x9E\xA1\xEF\xB8\x8F");
+	return forwarded ? result + text : text;
+}
+
+[[nodiscard]] QString TextWithPermanentSpoiler(
+		const TextWithEntities &textWithEntities) {
 	auto text = textWithEntities.text;
 	for (const auto &e : textWithEntities.entities) {
 		if (e.type() == EntityType::Spoiler) {
@@ -80,6 +88,42 @@ QString TextWithPermanentSpoiler(const TextWithEntities &textWithEntities) {
 	return text;
 }
 
+[[nodiscard]] QByteArray ReadRingtoneBytes(
+		const std::shared_ptr<Data::DocumentMedia> &media) {
+	const auto result = media->bytes();
+	if (!result.isEmpty()) {
+		return result;
+	}
+	const auto &location = media->owner()->location();
+	if (!location.isEmpty() && location.accessEnable()) {
+		const auto guard = gsl::finally([&] {
+			location.accessDisable();
+		});
+		auto f = QFile(location.name());
+		if (f.open(QIODevice::ReadOnly)) {
+			return f.readAll();
+		}
+	}
+	return {};
+}
+
+[[nodiscard]] std::optional<DocumentId> MaybeSoundFor(
+		not_null<Data::Thread*> thread,
+		PeerData *from) {
+	const auto notifySettings = &thread->owner().notifySettings();
+	const auto threadUnknown = notifySettings->muteUnknown(thread);
+	const auto threadAlert = !threadUnknown
+		&& !notifySettings->isMuted(thread);
+	const auto fromUnknown = (!from
+		|| notifySettings->muteUnknown(from));
+	const auto fromAlert = !fromUnknown
+		&& !notifySettings->isMuted(from);
+	const auto &sound = notifySettings->sound(thread);
+	return ((threadAlert || fromAlert) && !sound.none)
+		? sound.id
+		: std::optional<DocumentId>();
+}
+
 } // namespace
 
 const char kOptionGNotification[] = "gnotification";
@@ -90,11 +134,12 @@ base::options::toggle OptionGNotification({
 	.description = "Force enable GLib's GNotification."
 		" When disabled, autodetect is used.",
 	.scope = [] {
-#ifndef DESKTOP_APP_DISABLE_DBUS_INTEGRATION
+#if __has_include(<gio/gio.hpp>)
+		using namespace gi::repository;
 		return bool(Gio::Application::get_default());
-#else // !DESKTOP_APP_DISABLE_DBUS_INTEGRATION
+#else // __has_include(<gio/gio.hpp>)
 		return false;
-#endif // DESKTOP_APP_DISABLE_DBUS_INTEGRATION
+#endif // __has_include(<gio/gio.hpp>)
 	},
 	.restartRequired = true,
 });
@@ -139,16 +184,32 @@ void System::createManager() {
 	Platform::Notifications::Create(this);
 }
 
-void System::setManager(std::unique_ptr<Manager> manager) {
-	_manager = std::move(manager);
-	if (!_manager) {
+void System::setManager(Fn<std::unique_ptr<Manager>()> create) {
+	Expects(_manager != nullptr);
+	const auto guard = gsl::finally([&] {
+		Ensures(_manager != nullptr);
+	});
+
+	if ((Core::App().settings().nativeNotifications()
+				|| Platform::Notifications::Enforced())
+			&& Platform::Notifications::Supported()) {
+		if (_manager->type() == ManagerType::Native) {
+			return;
+		}
+
+		if (auto manager = create()) {
+			_manager = std::move(manager);
+			return;
+		}
+	}
+
+	if (Platform::Notifications::Enforced()) {
+		if (_manager->type() != ManagerType::Dummy) {
+			_manager = std::make_unique<DummyManager>(this);
+		}
+	} else if (_manager->type() != ManagerType::Default) {
 		_manager = std::make_unique<Default::Manager>(this);
 	}
-}
-
-Manager &System::manager() const {
-	Expects(_manager != nullptr);
-	return *_manager;
 }
 
 Main::Session *System::findSession(uint64 sessionId) const {
@@ -281,7 +342,7 @@ System::Timing System::countTiming(
 
 void System::registerThread(not_null<Data::Thread*> thread) {
 	if (const auto topic = thread->asTopic()) {
-		const auto [i, ok] = _watchedTopics.emplace(topic, rpl::lifetime());
+		const auto &[i, ok] = _watchedTopics.emplace(topic, rpl::lifetime());
 		if (ok) {
 			topic->destroyed() | rpl::start_with_next([=] {
 				clearFromTopic(topic);
@@ -510,10 +571,12 @@ void System::showGrouped() {
 			_manager->showNotification({
 				.item = lastItem,
 				.forwardedCount = _lastForwardedCount,
+				.soundId = _lastSoundId,
 			});
 			_lastForwardedCount = 0;
 			_lastHistoryItemId = FullMsgId();
 			_lastHistorySessionId = 0;
+			_lastSoundId = {};
 		}
 	}
 }
@@ -540,23 +603,16 @@ void System::showNext() {
 		}
 		return false;
 	};
-
 	auto ms = crl::now(), nextAlert = crl::time(0);
 	auto alertThread = (Data::Thread*)nullptr;
+	auto alertSoundId = std::optional<DocumentId>();
 	for (auto i = _whenAlerts.begin(); i != _whenAlerts.end();) {
 		while (!i->second.empty() && i->second.begin()->first <= ms) {
 			const auto thread = i->first;
-			const auto notifySettings = &thread->owner().notifySettings();
-			const auto threadUnknown = notifySettings->muteUnknown(thread);
-			const auto threadAlert = !threadUnknown
-				&& !notifySettings->isMuted(thread);
 			const auto from = i->second.begin()->second;
-			const auto fromUnknown = (!from
-				|| notifySettings->muteUnknown(from));
-			const auto fromAlert = !fromUnknown
-				&& !notifySettings->isMuted(from);
-			if (threadAlert || fromAlert) {
+			if (const auto soundId = MaybeSoundFor(thread, from)) {
 				alertThread = thread;
+				alertSoundId = soundId;
 			}
 			while (!i->second.empty()
 				&& i->second.begin()->first <= ms + kMinimalAlertDelay) {
@@ -599,7 +655,9 @@ void System::showNext() {
 		}
 	}
 
-	if (_waiters.empty() || !settings.desktopNotify() || _manager->skipToast()) {
+	if (_waiters.empty()
+		|| !settings.desktopNotify()
+		|| _manager->skipToast()) {
 		if (nextAlert) {
 			_waitTimer.callOnce(nextAlert - ms);
 		}
@@ -655,6 +713,7 @@ void System::showNext() {
 			break;
 		}
 		const auto notifyItem = notify->item;
+		const auto notifySilent = computeSkipState(*notify).silent;
 		const auto messageType = (notify->type
 			== Data::ItemNotificationType::Message);
 		const auto isForwarded = messageType
@@ -731,6 +790,9 @@ void System::showNext() {
 		if (!_lastHistoryItemId && groupedItem) {
 			_lastHistorySessionId = groupedItem->history()->session().uniqueId();
 			_lastHistoryItemId = groupedItem->fullId();
+			_lastSoundId = notifySilent ? std::nullopt : MaybeSoundFor(
+				notifyThread,
+				groupedItem->specialNotificationPeer());
 		}
 
 		// If the current notification is grouped.
@@ -749,6 +811,9 @@ void System::showNext() {
 			_lastForwardedCount += forwardedCount;
 			_lastHistorySessionId = groupedItem->history()->session().uniqueId();
 			_lastHistoryItemId = groupedItem->fullId();
+			_lastSoundId = notifySilent ? std::nullopt : MaybeSoundFor(
+				notifyThread,
+				groupedItem->specialNotificationPeer());
 			_waitForAllGroupedTimer.callOnce(kWaitingForAllGroupedDelay);
 		} else {
 			// If the current notification is not grouped
@@ -760,12 +825,18 @@ void System::showNext() {
 			const auto reaction = reactionNotification
 				? notify->item->lookupUnreadReaction(notify->reactionSender)
 				: Data::ReactionId();
+			const auto soundFrom = reactionNotification
+				? notify->reactionSender
+				: notify->item->specialNotificationPeer();
 			if (!reactionNotification || !reaction.empty()) {
 				_manager->showNotification({
 					.item = notify->item,
 					.forwardedCount = forwardedCount,
 					.reactionFrom = notify->reactionSender,
 					.reactionId = reaction,
+					.soundId = (notifySilent
+						? std::nullopt
+						: MaybeSoundFor(notifyThread, soundFrom)),
 				});
 			}
 		}
@@ -780,6 +851,25 @@ void System::showNext() {
 	}
 }
 
+QByteArray System::lookupSoundBytes(
+		not_null<Data::Session*> owner,
+		DocumentId id) {
+	if (id) {
+		const auto &notifySettings = owner->notifySettings();
+		const auto custom = notifySettings.lookupRingtone(id);
+		return custom ? ReadRingtoneBytes(custom) : QByteArray();
+	}
+	auto f = QFile(Core::App().settings().getSoundPath(u"msg_incoming"_q));
+	if (f.open(QIODevice::ReadOnly)) {
+		return f.readAll();
+	}
+	auto fallback = QFile(u":/sounds/msg_incoming.mp3"_q);
+	if (fallback.open(QIODevice::ReadOnly)) {
+		return fallback.readAll();
+	}
+	Unexpected("Embedded sound not found!");
+}
+
 not_null<Media::Audio::Track*> System::lookupSound(
 		not_null<Data::Session*> owner,
 		DocumentId id) {
@@ -791,14 +881,13 @@ not_null<Media::Audio::Track*> System::lookupSound(
 	if (i != end(_customSoundTracks)) {
 		return i->second.get();
 	}
-	const auto &notifySettings = owner->notifySettings();
-	const auto custom = notifySettings.lookupRingtone(id);
-	if (custom && !custom->bytes().isEmpty()) {
+	const auto bytes = lookupSoundBytes(owner, id);
+	if (!bytes.isEmpty()) {
 		const auto j = _customSoundTracks.emplace(
 			id,
 			Media::Audio::Current().createTrack()
 		).first;
-		j->second->fillFromData(bytes::make_vector(custom->bytes()));
+		j->second->fillFromData(bytes::make_vector(bytes));
 		return j->second.get();
 	}
 	ensureSoundCreated();
@@ -856,6 +945,10 @@ Manager::DisplayOptions Manager::getNotificationOptions(
 			&& (!topic || !Data::CanSendTexts(topic)))
 		|| peer->isBroadcast()
 		|| (peer->slowmodeSecondsLeft() > 0);
+	result.spoilerLoginCode = item
+		&& !item->out()
+		&& peer->isNotificationsUser()
+		&& Core::App().isSharingScreen();
 	return result;
 }
 
@@ -866,7 +959,6 @@ TextWithEntities Manager::ComposeReactionEmoji(
 		return TextWithEntities{ *emoji };
 	}
 	const auto id = v::get<DocumentId>(reaction.data);
-	auto entities = EntitiesInText();
 	const auto document = session->data().document(id);
 	const auto sticker = document->sticker();
 	const auto text = sticker ? sticker->alt : PlaceholderReactionText();
@@ -961,7 +1053,7 @@ TextWithEntities Manager::ComposeReactionNotification(
 				lt_reaction,
 				reactionWithEntities,
 				lt_title,
-				Ui::Text::WithEntities(poll->question),
+				poll->question,
 				Ui::Text::WithEntities);
 	} else if (media->game()) {
 		return simple(tr::lng_reaction_game);
@@ -1026,22 +1118,23 @@ void Manager::notificationActivated(
 				const auto replyToId = (id.msgId > 0
 					&& !history->peer->isUser()
 					&& id.msgId != topicRootId)
-					? id.msgId
-					: 0;
+					? FullMsgId(history->peer->id, id.msgId)
+					: FullMsgId();
 				auto draft = std::make_unique<Data::Draft>(
 					reply,
-					replyToId,
-					topicRootId,
+					FullReplyTo{
+						.messageId = replyToId,
+						.topicRootId = topicRootId,
+					},
 					MessageCursor{
 						int(reply.text.size()),
 						int(reply.text.size()),
-						QFIXED_MAX,
+						Ui::kQFixedMax,
 					},
-					Data::PreviewState::Allowed);
+					Data::WebPageDraft());
 				history->setLocalDraft(std::move(draft));
 			}
 			window->widget()->showFromTray();
-			window->widget()->reActivateWindow();
 			if (Core::App().passcodeLocked()) {
 				window->widget()->setInnerFocus();
 				system()->clearAll();
@@ -1062,7 +1155,7 @@ void Manager::openNotificationMessage(
 		&& item->isRegular()
 		&& (item->out() || (item->mentionsMe() && !history->peer->isUser()));
 	const auto topic = item ? item->topic() : nullptr;
-	const auto separate = Core::App().separateWindowForPeer(history->peer);
+	const auto separate = Core::App().separateWindowFor(history->peer);
 	const auto window = separate
 		? separate->sessionController()
 		: history->session().tryResolveWindow();
@@ -1109,13 +1202,16 @@ void Manager::notificationReplied(
 
 	auto message = Api::MessageToSend(Api::SendAction(history));
 	message.textWithTags = reply;
-	message.action.replyTo = (id.msgId > 0 && !history->peer->isUser()
+	const auto replyToId = (id.msgId > 0 && !history->peer->isUser()
 		&& id.msgId != topicRootId)
 		? id.msgId
 		: history->peer->isForum()
 		? topicRootId
 		: MsgId(0);
-	message.action.topicRootId = topic ? topic->rootId() : 0;
+	message.action.replyTo = {
+		.messageId = { replyToId ? history->peer->id : 0, replyToId },
+		.topicRootId = topic ? topic->rootId() : 0,
+	};
 	message.action.clearDraft = false;
 	history->session().api().sendMessage(std::move(message));
 
@@ -1167,19 +1263,34 @@ void NativeManager::doShowNotification(NotificationFields &&fields) {
 		? tr::lng_forward_messages(tr::now, lt_count, fields.forwardedCount)
 		: item->groupId()
 		? tr::lng_in_dlg_album(tr::now)
-		: TextWithPermanentSpoiler(item->notificationText());
+		: TextWithForwardedChar(
+			TextWithPermanentSpoiler(item->notificationText({
+				.spoilerLoginCode = options.spoilerLoginCode,
+			})),
+			(fields.forwardedCount == 1));
 
 	// #TODO optimize
 	auto userpicView = item->history()->peer->createUserpicView();
-	doShowNativeNotification(
-		item->history()->peer,
-		item->topicRootId(),
-		userpicView,
-		item->id,
-		scheduled ? WrapFromScheduled(fullTitle) : fullTitle,
-		subtitle,
-		text,
-		options);
+	const auto owner = &item->history()->owner();
+	const auto withSound = fields.soundId
+		&& Core::App().settings().soundNotify();
+	const auto sound = withSound ? [=, id = *fields.soundId] {
+		return _localSoundCache.sound(id, [=] {
+			return Core::App().notifications().lookupSoundBytes(owner, id);
+		}, [=] {
+			return Core::App().notifications().lookupSoundBytes(owner, 0);
+		});
+	} : Fn<NotificationSound()>();
+	doShowNativeNotification({
+		.peer = item->history()->peer,
+		.topicRootId = item->topicRootId(),
+		.itemId = item->id,
+		.title = scheduled ? WrapFromScheduled(fullTitle) : fullTitle,
+		.subtitle = subtitle,
+		.message = text,
+		.sound = sound,
+		.options = options,
+	}, userpicView);
 }
 
 bool NativeManager::forceHideDetails() const {

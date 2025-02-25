@@ -284,7 +284,7 @@ void TranslateBar::setup(not_null<History*> history) {
 
 	button->paintRequest(
 	) | rpl::start_with_next([=](QRect clip) {
-		QPainter(button).fillRect(clip, st::historyComposeButton.bgColor);
+		QPainter(button).fillRect(clip, st::historyComposeButtonBg);
 	}, button->lifetime());
 
 	button->setClickedCallback([=] {
@@ -310,7 +310,7 @@ void TranslateBar::setup(not_null<History*> history) {
 	const auto updateLabelGeometry = [=] {
 		const auto full = _wrap.width() - icon->width();
 		const auto skip = st::semiboldFont->spacew * 2;
-		const auto natural = label->naturalWidth();
+		const auto natural = label->textMaxWidth();
 		const auto top = [&] {
 			return (_wrap.height() - label->height()) / 2;
 		};
@@ -518,22 +518,20 @@ void TranslateBar::showToast(
 		const QString &buttonText,
 		Fn<void()> buttonCallback) {
 	const auto st = std::make_shared<style::Toast>(st::historyPremiumToast);
-	st->padding.setRight(st::historyPremiumViewSet.font->width(buttonText)
+	st->padding.setRight(st::historyPremiumViewSet.style.font->width(buttonText)
 		- st::historyPremiumViewSet.width);
 
 	const auto weak = Ui::Toast::Show(_wrap.window(), Ui::Toast::Config{
 		.text = std::move(text),
 		.st = st.get(),
-		.durationMs = kToastDuration,
-		.multiline = true,
-		.dark = true,
-		.slideSide = RectPart::Bottom,
+		.attach = RectPart::Bottom,
+		.acceptinput = true,
+		.duration = kToastDuration,
 	});
 	const auto strong = weak.get();
 	if (!strong) {
 		return;
 	}
-	strong->setInputUsed(true);
 	const auto widget = strong->widget();
 	widget->lifetime().add([st] {});
 	const auto hideToast = [weak] {

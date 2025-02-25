@@ -7,45 +7,54 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "settings/settings_main.h"
 
-#include "settings/settings_common.h"
-#include "settings/settings_codes.h"
+#include "api/api_credits.h"
+#include "core/application.h"
+#include "core/click_handler_types.h"
+#include "settings/settings_advanced.h"
+#include "settings/settings_business.h"
+#include "settings/settings_calls.h"
 #include "settings/settings_chat.h"
+#include "settings/settings_codes.h"
+#include "settings/settings_credits.h"
+#include "settings/settings_folders.h"
 #include "settings/settings_information.h"
 #include "settings/settings_notifications.h"
-#include "settings/settings_privacy_security.h"
-#include "settings/settings_advanced.h"
-#include "settings/settings_folders.h"
-#include "settings/settings_calls.h"
 #include "settings/settings_power_saving.h"
 #include "settings/settings_premium.h"
+#include "settings/settings_privacy_security.h"
 #include "settings/settings_scale_preview.h"
 #include "boxes/language_box.h"
 #include "boxes/username_box.h"
 #include "boxes/about_box.h"
+#include "boxes/star_gift_box.h"
 #include "ui/basic_click_handlers.h"
 #include "ui/boxes/confirm_box.h"
 #include "ui/controls/userpic_button.h"
-#include "ui/wrap/vertical_layout.h"
+#include "ui/effects/premium_graphics.h"
+#include "ui/effects/premium_top_bar.h" // Ui::Premium::ColorizedSvg.
 #include "ui/wrap/slide_wrap.h"
-#include "ui/wrap/padding_wrap.h"
-#include "ui/widgets/labels.h"
+#include "ui/widgets/menu/menu_add_action_callback.h"
 #include "ui/widgets/continuous_sliders.h"
-#include "ui/widgets/buttons.h"
+#include "ui/widgets/popup_menu.h"
 #include "ui/text/text_utilities.h"
 #include "ui/toast/toast.h"
+#include "ui/new_badges.h"
+#include "ui/rect.h"
+#include "ui/vertical_list.h"
 #include "info/profile/info_profile_badge.h"
 #include "info/profile/info_profile_emoji_status_panel.h"
+#include "data/components/credits.h"
 #include "data/data_user.h"
 #include "data/data_session.h"
 #include "data/data_cloud_themes.h"
 #include "data/data_chat_filters.h"
-#include "data/data_peer_values.h" // Data::AmPremiumValue
-#include "lang/lang_keys.h"
+#include "lang/lang_cloud_manager.h"
 #include "lang/lang_instance.h"
 #include "storage/localstorage.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
 #include "main/main_account.h"
+#include "main/main_domain.h"
 #include "main/main_app_config.h"
 #include "apiwrap.h"
 #include "api/api_peer_photo.h"
@@ -56,13 +65,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "info/profile/info_profile_values.h"
 #include "window/window_controller.h"
 #include "window/window_session_controller.h"
-#include "core/file_utilities.h"
-#include "core/application.h"
 #include "base/call_delayed.h"
 #include "base/platform/base_platform_info.h"
 #include "styles/style_settings.h"
-#include "styles/style_boxes.h"
 #include "styles/style_info.h"
+#include "styles/style_menu_icons.h"
 
 #include <QtGui/QGuiApplication>
 #include <QtGui/QClipboard>
@@ -113,7 +120,8 @@ Cover::Cover(
 , _badge(
 	this,
 	st::infoPeerBadge,
-	user,
+	&user->session(),
+	Info::Profile::BadgeContentForPeer(user),
 	&_emojiStatusPanel,
 	[=] {
 		return controller->isGifPausedAtLeastFor(
@@ -138,6 +146,20 @@ Cover::Cover(
 
 	_phone->setSelectable(true);
 	_phone->setContextCopyText(tr::lng_profile_copy_phone(tr::now));
+	const auto hook = [=](Ui::FlatLabel::ContextMenuRequest request) {
+		if (request.selection.empty()) {
+			const auto c = [=] {
+				auto phone = rpl::variable<TextWithEntities>(
+					Info::Profile::PhoneValue(_user)).current().text;
+				phone.replace(' ', QString()).replace('-', QString());
+				TextUtilities::SetClipboardText({ phone });
+			};
+			request.menu->addAction(tr::lng_profile_copy_phone(tr::now), c);
+		} else {
+			_phone->fillContextMenu(request);
+		}
+	};
+	_phone->setContextMenuHook(hook);
 
 	initViewers();
 	setupChildGeometry();
@@ -207,15 +229,13 @@ void Cover::initViewers() {
 	}, lifetime());
 
 	_username->overrideLinkClickHandler([=] {
-		const auto username = _user->userName();
+		const auto username = _user->username();
 		if (username.isEmpty()) {
-			_controller->show(Box(UsernamesBox, &_user->session()));
+			_controller->show(Box(UsernamesBox, _user));
 		} else {
 			QGuiApplication::clipboard()->setText(
 				_user->session().createInternalLinkFull(username));
-			Ui::Toast::Show(
-				Window::Show(_controller).toastParent(),
-				tr::lng_username_copied(tr::now));
+			_controller->showToast(tr::lng_username_copied(tr::now));
 		}
 	});
 }
@@ -256,16 +276,95 @@ void Cover::refreshUsernameGeometry(int newWidth) {
 	_username->moveToLeft(usernameLeft, usernameTop, newWidth);
 }
 
+[[nodiscard]] not_null<Ui::SettingsButton*> AddPremiumStar(
+		not_null<Ui::SettingsButton*> button,
+		bool credits,
+		Fn<bool()> isPaused) {
+	const auto stops = credits
+		? Ui::Premium::CreditsIconGradientStops()
+		: Ui::Premium::ButtonGradientStops();
+
+	const auto ministarsContainer = Ui::CreateChild<Ui::RpWidget>(button);
+	const auto &buttonSt = button->st();
+	const auto fullHeight = buttonSt.height
+		+ rect::m::sum::v(buttonSt.padding);
+	using MiniStars = Ui::Premium::ColoredMiniStars;
+	const auto ministars = button->lifetime().make_state<MiniStars>(
+		ministarsContainer,
+		false);
+	ministars->setColorOverride(stops);
+
+	const auto isPausedValue
+		= button->lifetime().make_state<rpl::variable<bool>>(isPaused());
+	isPausedValue->value() | rpl::start_with_next([=](bool value) {
+		ministars->setPaused(value);
+	}, ministarsContainer->lifetime());
+
+	ministarsContainer->paintRequest(
+	) | rpl::start_with_next([=] {
+		(*isPausedValue) = isPaused();
+		auto p = QPainter(ministarsContainer);
+		{
+			constexpr auto kScale = 0.35;
+			const auto r = ministarsContainer->rect();
+			p.translate(r.center());
+			p.scale(kScale, kScale);
+			p.translate(-r.center());
+		}
+		ministars->paint(p);
+	}, ministarsContainer->lifetime());
+
+	const auto badge = Ui::CreateChild<Ui::RpWidget>(button.get());
+
+	auto star = [&] {
+		const auto factor = style::DevicePixelRatio();
+		const auto size = Size(st::settingsButtonNoIcon.style.font->ascent);
+		auto image = QImage(
+			size * factor,
+			QImage::Format_ARGB32_Premultiplied);
+		image.setDevicePixelRatio(factor);
+		image.fill(Qt::transparent);
+		{
+			auto p = QPainter(&image);
+			auto star = QSvgRenderer(Ui::Premium::ColorizedSvg(stops));
+			star.render(&p, Rect(size));
+		}
+		return image;
+	}();
+	badge->resize(star.size() / style::DevicePixelRatio());
+	badge->paintRequest(
+	) | rpl::start_with_next([=] {
+		auto p = QPainter(badge);
+		p.drawImage(0, 0, star);
+	}, badge->lifetime());
+
+	button->sizeValue(
+	) | rpl::start_with_next([=](const QSize &s) {
+		badge->moveToLeft(
+			button->st().iconLeft
+				+ (st::menuIconShop.width() - badge->width()) / 2,
+			(s.height() - badge->height()) / 2);
+		ministarsContainer->moveToLeft(
+			badge->x() - (fullHeight - badge->height()) / 2,
+			0);
+	}, badge->lifetime());
+
+	ministarsContainer->resize(fullHeight, fullHeight);
+	ministars->setCenter(ministarsContainer->rect());
+
+	return button;
+}
+
 } // namespace
 
 void SetupPowerSavingButton(
 		not_null<Window::Controller*> window,
 		not_null<Ui::VerticalLayout*> container) {
-	const auto button = AddButton(
+	const auto button = AddButtonWithIcon(
 		container,
 		tr::lng_settings_power_menu(),
 		st::settingsButton,
-		{ &st::settingsIconBattery, kIconDarkOrange });
+		{ &st::menuIconPowerUsage });
 	button->setClickedCallback([=] {
 		window->show(Box(PowerSavingBox));
 	});
@@ -273,8 +372,7 @@ void SetupPowerSavingButton(
 
 void SetupLanguageButton(
 		not_null<Window::Controller*> window,
-		not_null<Ui::VerticalLayout*> container,
-		bool icon) {
+		not_null<Ui::VerticalLayout*> container) {
 	const auto button = AddButtonWithLabel(
 		container,
 		tr::lng_settings_language(),
@@ -283,8 +381,8 @@ void SetupLanguageButton(
 		) | rpl::then(
 			Lang::GetInstance().idChanges()
 		) | rpl::map([] { return Lang::GetInstance().nativeName(); }),
-		icon ? st::settingsButton : st::settingsButtonNoIcon,
-		{ icon ? &st::settingsIconLanguage : nullptr, kIconLightBlue });
+		st::settingsButton,
+		{ &st::menuIconTranslate });
 	const auto guard = Ui::CreateChild<base::binary_guard>(button.get());
 	button->addClickHandler([=] {
 		const auto m = button->clickModifiers();
@@ -300,48 +398,46 @@ void SetupSections(
 		not_null<Window::SessionController*> controller,
 		not_null<Ui::VerticalLayout*> container,
 		Fn<void(Type)> showOther) {
-	AddDivider(container);
-	AddSkip(container);
+	Ui::AddDivider(container);
+	Ui::AddSkip(container);
 
 	const auto addSection = [&](
 			rpl::producer<QString> label,
 			Type type,
 			IconDescriptor &&descriptor) {
-		AddButton(
+		AddButtonWithIcon(
 			container,
 			std::move(label),
 			st::settingsButton,
 			std::move(descriptor)
 		)->addClickHandler([=] {
-			if (type == PremiumId()) {
-				controller->setPremiumRef("settings");
-			}
 			showOther(type);
 		});
 	};
 	if (controller->session().supportMode()) {
 		SetupSupport(controller, container);
 
-		AddDivider(container);
-		AddSkip(container);
+		Ui::AddDivider(container);
+		Ui::AddSkip(container);
 	} else {
 		addSection(
-			tr::lng_settings_information(),
+			tr::lng_settings_my_account(),
 			Information::Id(),
-			{ &st::settingsIconAccount, kIconLightOrange });
+			{ &st::menuIconProfile });
 	}
+
 	addSection(
 		tr::lng_settings_section_notify(),
 		Notifications::Id(),
-		{ &st::settingsIconNotifications, kIconRed });
+		{ &st::menuIconNotifications });
 	addSection(
 		tr::lng_settings_section_privacy(),
 		PrivacySecurity::Id(),
-		{ &st::settingsIconLock, kIconGreen });
+		{ &st::menuIconLock });
 	addSection(
 		tr::lng_settings_section_chat_settings(),
 		Chat::Id(),
-		{ &st::settingsIconChat, kIconLightBlue });
+		{ &st::menuIconChatBubble });
 
 	const auto preload = [=] {
 		controller->session().data().chatsFilters().requestSuggested();
@@ -350,11 +446,11 @@ void SetupSections(
 	const auto slided = container->add(
 		object_ptr<Ui::SlideWrap<Ui::SettingsButton>>(
 			container,
-			CreateButton(
+			CreateButtonWithIcon(
 				container,
 				tr::lng_settings_section_filters(),
 				st::settingsButton,
-				{ &st::settingsIconFolders, kIconDarkBlue }))
+				{ &st::menuIconShowInFolder }))
 	)->setDuration(0);
 	if (controller->session().data().chatsFilters().has()
 		|| controller->session().settings().dialogsFiltersEnabled()) {
@@ -363,7 +459,7 @@ void SetupSections(
 	} else {
 		const auto enabled = [=] {
 			const auto result = account->appConfig().get<bool>(
-				"dialog_filters_enabled",
+				u"dialog_filters_enabled"_q,
 				false);
 			if (result) {
 				preload();
@@ -389,37 +485,85 @@ void SetupSections(
 	addSection(
 		tr::lng_settings_advanced(),
 		Advanced::Id(),
-		{ &st::settingsIconGeneral, kIconPurple });
+		{ &st::menuIconManage });
 	addSection(
-		tr::lng_settings_section_call_settings(),
+		tr::lng_settings_section_devices(),
 		Calls::Id(),
-		{ &st::settingsIconCalls, kIconGreen });
+		{ &st::menuIconUnmute });
 
 	SetupPowerSavingButton(&controller->window(), container);
 	SetupLanguageButton(&controller->window(), container);
 
-	if (controller->session().premiumPossible()) {
-		AddSkip(container);
-		AddDivider(container);
-		AddSkip(container);
+	Ui::AddSkip(container);
+}
 
-		const auto icon = &st::settingsPremiumIconStar;
-		auto gradient = QLinearGradient(
-			0,
-			icon->height(),
-			icon->width() + icon->width() / 3,
-			0 - icon->height() / 3);
-		gradient.setStops(QGradientStops{
-			{ 0.0, st::premiumButtonBg1->c },
-			{ 1.0, st::premiumButtonBg3->c },
-		});
-		addSection(
-			tr::lng_premium_summary_title(),
-			PremiumId(),
-			{ .icon = icon, .backgroundBrush = QBrush(gradient) });
+void SetupPremium(
+		not_null<Window::SessionController*> controller,
+		not_null<Ui::VerticalLayout*> container,
+		Fn<void(Type)> showOther) {
+	if (!controller->session().premiumPossible()) {
+		return;
 	}
+	Ui::AddDivider(container);
+	Ui::AddSkip(container);
 
-	AddSkip(container);
+	const auto isPaused = Window::PausedIn(
+		controller,
+		Window::GifPauseReason::Any);
+
+	AddPremiumStar(
+		AddButtonWithIcon(
+			container,
+			tr::lng_premium_summary_title(),
+			st::settingsButton),
+		false,
+		isPaused
+	)->addClickHandler([=] {
+		controller->setPremiumRef("settings");
+		showOther(PremiumId());
+	});
+	{
+		controller->session().credits().load();
+		AddPremiumStar(
+			AddButtonWithLabel(
+				container,
+				tr::lng_settings_credits(),
+				controller->session().credits().balanceValue(
+				) | rpl::map([=](StarsAmount c) {
+					return c
+						? Lang::FormatStarsAmountToShort(c).string
+						: QString();
+				}),
+				st::settingsButton),
+			true,
+			isPaused
+		)->addClickHandler([=] {
+			controller->setPremiumRef("settings");
+			showOther(CreditsId());
+		});
+	}
+	const auto button = AddButtonWithIcon(
+		container,
+		tr::lng_business_title(),
+		st::settingsButton,
+		{ .icon = &st::menuIconShop });
+	button->addClickHandler([=] {
+		showOther(BusinessId());
+	});
+	Ui::NewBadge::AddToRight(button);
+
+	if (controller->session().premiumCanBuy()) {
+		const auto button = AddButtonWithIcon(
+			container,
+			tr::lng_settings_gift_premium(),
+			st::settingsButton,
+			{ .icon = &st::menuIconGiftPremium }
+		);
+		button->addClickHandler([=] {
+			Ui::ChooseStarGiftRecipient(controller);
+		});
+	}
+	Ui::AddSkip(container);
 }
 
 bool HasInterfaceScale() {
@@ -438,11 +582,11 @@ void SetupInterfaceScale(
 		container.get());
 
 	const auto switched = (cConfigScale() == style::kScaleAuto);
-	const auto button = AddButton(
+	const auto button = AddButtonWithIcon(
 		container,
 		tr::lng_settings_default_scale(),
 		icon ? st::settingsButton : st::settingsButtonNoIcon,
-		{ icon ? &st::settingsIconInterfaceScale : nullptr, kIconLightOrange }
+		{ icon ? &st::menuIconShowInChat : nullptr }
 	)->toggleOn(toggled->events_starting_with_copy(switched));
 
 	const auto ratio = style::DevicePixelRatio();
@@ -478,7 +622,8 @@ void SetupInterfaceScale(
 		st::settingsScale,
 		st::settingsScaleLabel,
 		st::normalFont->spacew * 2,
-		st::settingsScaleLabel.style.font->width("300%"));
+		st::settingsScaleLabel.style.font->width("300%"),
+		true);
 	container->add(
 		std::move(sliderWithLabel.widget),
 		icon ? st::settingsScalePadding : st::settingsBigScalePadding);
@@ -573,45 +718,39 @@ void SetupInterfaceScale(
 	}, button->lifetime());
 
 	if (!icon) {
-		AddSkip(container, st::settingsThumbSkip);
+		Ui::AddSkip(container, st::settingsThumbSkip);
 	}
-}
-
-void OpenFaq() {
-	File::OpenUrl(telegramFaqLink());
-}
-
-void SetupFaq(not_null<Ui::VerticalLayout*> container, bool icon) {
-	AddButton(
-		container,
-		tr::lng_settings_faq(),
-		icon ? st::settingsButton : st::settingsButtonNoIcon,
-		{ icon ? &st::settingsIconFaq : nullptr, kIconLightBlue }
-	)->addClickHandler(OpenFaq);
 }
 
 void SetupHelp(
 		not_null<Window::SessionController*> controller,
 		not_null<Ui::VerticalLayout*> container) {
-	AddDivider(container);
-	AddSkip(container);
+	Ui::AddDivider(container);
+	Ui::AddSkip(container);
 
-	SetupFaq(container);
+	AddButtonWithIcon(
+		container,
+		tr::lng_settings_faq(),
+		st::settingsButton,
+		{ &st::menuIconFaq }
+	)->addClickHandler([=] {
+		OpenFaq(controller);
+	});
 
-	AddButton(
+	AddButtonWithIcon(
 		container,
 		tr::lng_settings_features(),
 		st::settingsButton,
-		{ &st::settingsIconTips, kIconLightOrange }
+		{ &st::menuIconEmojiObjects }
 	)->setClickedCallback([=] {
 		UrlClickHandler::Open(tr::lng_telegram_features_url(tr::now));
 	});
 
-	const auto button = AddButton(
+	const auto button = AddButtonWithIcon(
 		container,
 		tr::lng_settings_ask_question(),
 		st::settingsButton,
-		{ &st::settingsIconAskQuestion, kIconGreen });
+		{ &st::menuIconDiscussion });
 	const auto requestId = button->lifetime().make_state<mtpRequestId>();
 	button->lifetime().add([=] {
 		if (*requestId) {
@@ -640,7 +779,10 @@ void SetupHelp(
 		auto box = Ui::MakeConfirmBox({
 			.text = tr::lng_settings_ask_sure(),
 			.confirmed = sure,
-			.cancelled = OpenFaq,
+			.cancelled = [=](Fn<void()> close) {
+				OpenFaq(controller);
+				close();
+			},
 			.confirmText = tr::lng_settings_ask_ok(),
 			.cancelText = tr::lng_settings_faq_button(),
 			.strictCancel = true,
@@ -662,6 +804,28 @@ rpl::producer<QString> Main::title() {
 	return tr::lng_menu_settings();
 }
 
+void Main::fillTopBarMenu(const Ui::Menu::MenuCallback &addAction) {
+	const auto &list = Core::App().domain().accounts();
+	if (list.size() < Core::App().domain().maxAccounts()) {
+		addAction(tr::lng_menu_add_account(tr::now), [=] {
+			Core::App().domain().addActivated(MTP::Environment{});
+		}, &st::menuIconAddAccount);
+	}
+	if (!_controller->session().supportMode()) {
+		addAction(
+			tr::lng_settings_information(tr::now),
+			[=] { showOther(Information::Id()); },
+			&st::menuIconEdit);
+	}
+	const auto window = &_controller->window();
+	addAction({
+		.text = tr::lng_settings_logout(tr::now),
+		.handler = [=] { window->showLogoutConfirmation(); },
+		.icon = &st::menuIconLeaveAttention,
+		.isAttention = true,
+	});
+}
+
 void Main::keyPressEvent(QKeyEvent *e) {
 	crl::on_main(this, [=, text = e->text()]{
 		CodesFeedString(_controller, text);
@@ -677,15 +841,14 @@ void Main::setupContent(not_null<Window::SessionController*> controller) {
 		controller,
 		controller->session().user()));
 
-	SetupSections(controller, content, [=](Type type) {
-		_showOther.fire_copy(type);
-	});
+	SetupSections(controller, content, showOtherMethod());
 	if (HasInterfaceScale()) {
-		AddDivider(content);
-		AddSkip(content);
+		Ui::AddDivider(content);
+		Ui::AddSkip(content);
 		SetupInterfaceScale(&controller->window(), content);
-		AddSkip(content);
+		Ui::AddSkip(content);
 	}
+	SetupPremium(controller, content, showOtherMethod());
 	SetupHelp(controller, content);
 
 	Ui::ResizeFitChild(this, content);
@@ -698,8 +861,12 @@ void Main::setupContent(not_null<Window::SessionController*> controller) {
 	controller->session().data().cloudThemes().refresh();
 }
 
-rpl::producer<Type> Main::sectionShowOther() {
-	return _showOther.events();
+void OpenFaq(base::weak_ptr<Window::SessionController> weak) {
+	UrlClickHandler::Open(
+		tr::lng_settings_faq_link(tr::now),
+		QVariant::fromValue(ClickHandlerContext{
+			.sessionWindow = weak,
+		}));
 }
 
 } // namespace Settings

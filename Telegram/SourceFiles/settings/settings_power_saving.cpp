@@ -12,11 +12,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/application.h"
 #include "core/core_settings.h"
 #include "lang/lang_keys.h"
-#include "settings/settings_common.h"
 #include "ui/layers/generic_box.h"
-#include "ui/toasts/common_toasts.h"
 #include "ui/widgets/buttons.h"
 #include "ui/power_saving.h"
+#include "ui/vertical_list.h"
 #include "styles/style_menu_icons.h"
 #include "styles/style_layers.h"
 #include "styles/style_settings.h"
@@ -41,7 +40,7 @@ void PowerSavingBox(not_null<Ui::GenericBox*> box) {
 	box->setPinnedToTopContent(
 		object_ptr<Ui::FixedHeightWidget>(box, st::lineWidth));
 
-	const auto subtitle = AddSubsectionTitle(
+	const auto subtitle = Ui::AddSubsectionTitle(
 		container,
 		tr::lng_settings_power_subtitle(),
 		st::powerSavingSubtitlePadding);
@@ -64,16 +63,16 @@ void PowerSavingBox(not_null<Ui::GenericBox*> box) {
 
 	auto automatic = (Ui::SettingsButton*)nullptr;
 	if (batterySaving.has_value()) {
-		AddSkip(container);
-		AddDivider(container);
-		AddSkip(container);
-		automatic = AddButton(
+		Ui::AddSkip(container);
+		Ui::AddDivider(container);
+		Ui::AddSkip(container);
+		automatic = container->add(object_ptr<Ui::SettingsButton>(
 			container,
 			tr::lng_settings_power_auto(),
 			st::powerSavingButtonNoIcon
-		)->toggleOn(rpl::single(!ignore));
-		AddSkip(container);
-		AddDividerText(container, tr::lng_settings_power_auto_about());
+		))->toggleOn(rpl::single(!ignore));
+		Ui::AddSkip(container);
+		Ui::AddDividerText(container, tr::lng_settings_power_auto_about());
 
 		state->forceDisabledMessage = rpl::combine(
 			automatic->toggledValue(),
@@ -84,13 +83,13 @@ void PowerSavingBox(not_null<Ui::GenericBox*> box) {
 				: rpl::single(QString());
 		}) | rpl::flatten_latest();
 
-		const auto disabler = Ui::CreateChild<Ui::AbstractButton>(container.get());
+		const auto show = box->uiShow();
+		const auto disabler = Ui::CreateChild<Ui::AbstractButton>(
+			container.get());
 		disabler->setClickedCallback([=] {
-			Ui::ShowMultilineToast({
-				.parentOverride = container,
-				.text = { tr::lng_settings_power_turn_off(tr::now) },
-				.duration = kForceDisableTooltipDuration,
-			});
+			show->showToast(
+				tr::lng_settings_power_turn_off(tr::now),
+				kForceDisableTooltipDuration);
 		});
 		disabler->paintRequest() | rpl::start_with_next([=](QRect clip) {
 			auto color = st::boxBg->c;
@@ -153,6 +152,7 @@ EditFlagsDescriptor<PowerSaving::Flags> PowerSavingLabels() {
 			&st::menuIconChatBubble,
 		},
 		{ kChatSpoiler, tr::lng_settings_power_chat_spoiler(tr::now) },
+		{ kChatEffects, tr::lng_settings_power_chat_effects(tr::now) },
 	};
 	auto calls = std::vector<Label>{
 		{
@@ -173,7 +173,7 @@ EditFlagsDescriptor<PowerSaving::Flags> PowerSavingLabels() {
 		{ tr::lng_settings_power_emoji(), std::move(emoji) },
 		{ tr::lng_settings_power_chat(), std::move(chat) },
 		{ std::nullopt, std::move(calls) },
-		{ std::nullopt, std::move(animations),  },
+		{ std::nullopt, std::move(animations) },
 	}, .st = &st::powerSavingButton };
 }
 

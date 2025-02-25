@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/cache/storage_cache_database.h"
 #include "data/stickers/data_stickers_set.h"
 #include "data/data_drafts.h"
+#include "webview/webview_common.h"
 
 class History;
 
@@ -51,9 +52,9 @@ using FileKey = quint64;
 enum class StartResult : uchar;
 
 struct MessageDraft {
-	MsgId msgId = 0;
+	FullReplyTo reply;
 	TextWithTags textWithTags;
-	Data::PreviewState previewState = Data::PreviewState::Allowed;
+	Data::WebPageDraft webpage;
 };
 
 struct MessageDraftSource {
@@ -75,6 +76,7 @@ public:
 	}
 
 	[[nodiscard]] QString tempDirectory() const;
+	[[nodiscard]] QString supportModePath() const;
 
 	[[nodiscard]] MTP::AuthKeyPtr peekLegacyLocalKey() const {
 		return _localKey;
@@ -148,6 +150,14 @@ public:
 	void writeExportSettings(const Export::Settings &settings);
 	[[nodiscard]] Export::Settings readExportSettings();
 
+	void setMediaLastPlaybackPosition(DocumentId id, crl::time time);
+	[[nodiscard]] crl::time mediaLastPlaybackPosition(DocumentId id) const;
+
+	void writeSearchSuggestionsDelayed();
+	void writeSearchSuggestionsIfNeeded();
+	void writeSearchSuggestions();
+	void readSearchSuggestions();
+
 	void writeSelf();
 
 	// Read self is special, it can't get session from account, because
@@ -163,6 +173,16 @@ public:
 	[[nodiscard]] bool isBotTrustedPayment(PeerId botId);
 	void markBotTrustedOpenWebView(PeerId botId);
 	[[nodiscard]] bool isBotTrustedOpenWebView(PeerId botId);
+
+	void enforceModernStorageIdBots();
+	[[nodiscard]] Webview::StorageId resolveStorageIdBots();
+	[[nodiscard]] Webview::StorageId resolveStorageIdOther();
+
+	[[nodiscard]] QImage readRoundPlaceholder();
+	void writeRoundPlaceholder(const QImage &placeholder);
+
+	[[nodiscard]] QByteArray readInlineBotsDownloads();
+	void writeInlineBotsDownloads(const QByteArray &bytes);
 
 	[[nodiscard]] bool encrypt(
 		const void *src,
@@ -184,9 +204,9 @@ private:
 		Failed,
 	};
 	enum class BotTrustFlag : uchar {
-		NoOpenGame  = (1 << 0),
-		Payment     = (1 << 1),
-		OpenWebView = (1 << 2),
+		NoOpenGame        = (1 << 0),
+		Payment           = (1 << 1),
+		OpenWebView       = (1 << 2),
 	};
 	friend inline constexpr bool is_flag_type(BotTrustFlag) { return true; };
 
@@ -244,6 +264,9 @@ private:
 	void readTrustedBots();
 	void writeTrustedBots();
 
+	void readMediaLastPlaybackPositions();
+	void writeMediaLastPlaybackPositions();
+
 	std::optional<RecentHashtagPack> saveRecentHashtags(
 		Fn<RecentHashtagPack()> getPack,
 		const QString &text);
@@ -291,6 +314,10 @@ private:
 	FileKey _installedCustomEmojiKey = 0;
 	FileKey _featuredCustomEmojiKey = 0;
 	FileKey _archivedCustomEmojiKey = 0;
+	FileKey _searchSuggestionsKey = 0;
+	FileKey _roundPlaceholderKey = 0;
+	FileKey _inlineBotsDownloadsKey = 0;
+	FileKey _mediaLastPlaybackPositionsKey = 0;
 
 	qint64 _cacheTotalSizeLimit = 0;
 	qint64 _cacheBigFileTotalSizeLimit = 0;
@@ -301,14 +328,27 @@ private:
 	bool _trustedBotsRead = false;
 	bool _readingUserSettings = false;
 	bool _recentHashtagsAndBotsWereRead = false;
+	bool _searchSuggestionsRead = false;
+	bool _inlineBotsDownloadsRead = false;
+	bool _mediaLastPlaybackPositionsRead = false;
+
+	std::vector<std::pair<DocumentId, crl::time>> _mediaLastPlaybackPosition;
+
+	Webview::StorageId _webviewStorageIdBots;
+	Webview::StorageId _webviewStorageIdOther;
 
 	int _oldMapVersion = 0;
 
 	base::Timer _writeMapTimer;
 	base::Timer _writeLocationsTimer;
+	base::Timer _writeSearchSuggestionsTimer;
 	bool _mapChanged = false;
 	bool _locationsChanged = false;
 
+	QImage _roundPlaceholder;
+
 };
+
+[[nodiscard]] Webview::StorageId TonSiteStorageId();
 
 } // namespace Storage

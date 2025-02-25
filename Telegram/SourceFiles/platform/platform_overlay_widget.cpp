@@ -9,7 +9,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "ui/effects/animations.h"
 #include "ui/platform/ui_platform_window_title.h"
-#include "ui/platform/ui_platform_utility.h"
 #include "ui/widgets/rp_window.h"
 #include "ui/abstract_button.h"
 #include "styles/style_media_view.h"
@@ -216,7 +215,8 @@ void DefaultOverlayWidgetHelper::orderWidgets() {
 }
 
 bool DefaultOverlayWidgetHelper::skipTitleHitTest(QPoint position) {
-	return _controls->controls.geometry().contains(position);
+	using namespace Ui::Platform;
+	return _controls->controls.hitTest(position) != HitTestResult::None;
 }
 
 rpl::producer<> DefaultOverlayWidgetHelper::controlsActivations() {
@@ -224,9 +224,9 @@ rpl::producer<> DefaultOverlayWidgetHelper::controlsActivations() {
 }
 
 rpl::producer<bool> DefaultOverlayWidgetHelper::controlsSideRightValue() {
-	return Ui::Platform::TitleControlsLayoutValue() | rpl::map([=] {
-		return _controls->controls.geometry().center().x()
-			> _controls->wrap.geometry().center().x();
+	return _controls->controls.layout().value(
+	) | rpl::map([=](const auto &layout) {
+		return !layout.onLeft();
 	}) | rpl::distinct_until_changed();
 }
 

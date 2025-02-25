@@ -8,60 +8,61 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "settings/settings_privacy_security.h"
 
 #include "api/api_authorizations.h"
-#include "api/api_blocked_peers.h"
 #include "api/api_cloud_password.h"
 #include "api/api_self_destruct.h"
 #include "api/api_sensitive_content.h"
 #include "api/api_global_privacy.h"
+#include "api/api_websites.h"
 #include "settings/cloud_password/settings_cloud_password_email_confirm.h"
 #include "settings/cloud_password/settings_cloud_password_input.h"
 #include "settings/cloud_password/settings_cloud_password_start.h"
+#include "settings/settings_active_sessions.h"
 #include "settings/settings_blocked_peers.h"
-#include "settings/settings_common.h"
 #include "settings/settings_global_ttl.h"
 #include "settings/settings_local_passcode.h"
 #include "settings/settings_premium.h" // Settings::ShowPremium.
 #include "settings/settings_privacy_controllers.h"
+#include "settings/settings_websites.h"
+#include "base/system_unlock.h"
 #include "base/timer_rpl.h"
-#include "boxes/edit_privacy_box.h"
 #include "boxes/passcode_box.h"
-#include "boxes/auto_lock_box.h"
-#include "boxes/sessions_box.h"
 #include "ui/boxes/confirm_box.h"
 #include "boxes/self_destruction_box.h"
 #include "core/application.h"
 #include "core/core_settings.h"
 #include "ui/chat/chat_style.h"
+#include "ui/effects/premium_graphics.h"
+#include "ui/effects/premium_top_bar.h"
 #include "ui/text/format_values.h"
 #include "ui/text/text_utilities.h"
 #include "ui/toast/toast.h"
-#include "ui/wrap/vertical_layout.h"
 #include "ui/wrap/slide_wrap.h"
 #include "ui/wrap/fade_wrap.h"
+#include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/shadow.h"
-#include "ui/widgets/labels.h"
-#include "ui/widgets/buttons.h"
 #include "ui/widgets/checkbox.h"
-#include "ui/layers/generic_box.h"
+#include "ui/vertical_list.h"
+#include "ui/rect.h"
 #include "calls/calls_instance.h"
-#include "core/core_cloud_password.h"
 #include "core/update_checker.h"
-#include "base/platform/base_platform_last_input.h"
 #include "lang/lang_keys.h"
+#include "data/components/top_peers.h"
 #include "data/data_session.h"
 #include "data/data_chat.h"
 #include "data/data_channel.h"
 #include "data/data_peer_values.h"
+#include "main/main_app_config.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
 #include "storage/storage_domain.h"
 #include "window/window_session_controller.h"
 #include "apiwrap.h"
 #include "styles/style_settings.h"
+#include "styles/style_menu_icons.h"
 #include "styles/style_layers.h"
-#include "styles/style_boxes.h"
 
 #include <QtGui/QGuiApplication>
+#include <QtSvg/QSvgRenderer>
 
 namespace Settings {
 namespace {
@@ -70,12 +71,110 @@ constexpr auto kUpdateTimeout = 60 * crl::time(1000);
 
 using Privacy = Api::UserPrivacy;
 
-QString PrivacyBase(Privacy::Key key, Privacy::Option option) {
+[[nodiscard]] QImage PremiumStar() {
+	const auto factor = style::DevicePixelRatio();
+	const auto size = Size(st::settingsButtonNoIcon.style.font->ascent);
+	auto image = QImage(
+		size * factor,
+		QImage::Format_ARGB32_Premultiplied);
+	image.setDevicePixelRatio(factor);
+	image.fill(Qt::transparent);
+	{
+		auto p = QPainter(&image);
+		auto star = QSvgRenderer(
+			Ui::Premium::ColorizedSvg(Ui::Premium::ButtonGradientStops()));
+		star.render(&p, Rect(size));
+	}
+	return image;
+}
+
+void AddPremiumStar(
+		not_null<Ui::SettingsButton*> button,
+		not_null<Main::Session*> session,
+		rpl::producer<QString> label,
+		const QMargins &padding) {
+	const auto badge = Ui::CreateChild<Ui::RpWidget>(button.get());
+	badge->showOn(Data::AmPremiumValue(session));
+	const auto sampleLeft = st::settingsColorSamplePadding.left();
+	const auto badgeLeft = padding.left() + sampleLeft;
+
+	auto star = PremiumStar();
+	badge->resize(star.size() / style::DevicePixelRatio());
+	badge->paintRequest(
+	) | rpl::start_with_next([=] {
+		auto p = QPainter(badge);
+		p.drawImage(0, 0, star);
+	}, badge->lifetime());
+
+	rpl::combine(
+		button->sizeValue(),
+		std::move(label)
+	) | rpl::start_with_next([=](const QSize &s, const QString &) {
+		if (s.isNull()) {
+			return;
+		}
+		badge->moveToLeft(
+			button->fullTextWidth() + badgeLeft,
+			(s.height() - badge->height()) / 2);
+	}, badge->lifetime());
+}
+
+void OpenFileConfirmationsBox(not_null<Ui::GenericBox*> box) {
+	box->setTitle(tr::lng_settings_file_confirmations());
+
+	const auto settings = &Core::App().settings();
+	const auto &list = settings->noWarningExtensions();
+	const auto text = QStringList(begin(list), end(list)).join(' ');
+	const auto layout = box->verticalLayout();
+	const auto extensions = box->addRow(
+		object_ptr<Ui::InputField>(
+			box,
+			st::defaultInputField,
+			Ui::InputField::Mode::MultiLine,
+			tr::lng_settings_edit_extensions(),
+			TextWithTags{ text }),
+		st::boxRowPadding + QMargins(0, 0, 0, st::settingsPrivacySkip));
+	Ui::AddDividerText(layout, tr::lng_settings_edit_extensions_about());
+	Ui::AddSkip(layout);
+	const auto ip = layout->add(object_ptr<Ui::SettingsButton>(
+		box,
+		tr::lng_settings_edit_ip_confirm(),
+		st::settingsButtonNoIcon
+	))->toggleOn(rpl::single(settings->ipRevealWarning()));
+	Ui::AddSkip(layout);
+	Ui::AddDividerText(layout, tr::lng_settings_edit_ip_confirm_about());
+
+	box->setFocusCallback([=] {
+		extensions->setFocusFast();
+	});
+
+	box->addButton(tr::lng_settings_save(), [=] {
+		const auto extensionsList = extensions->getLastText()
+			.mid(0, 10240)
+			.split(' ', Qt::SkipEmptyParts)
+			.mid(0, 1024);
+		auto extensions = base::flat_set<QString>(
+			extensionsList.begin(),
+			extensionsList.end());
+		const auto ipRevealWarning = ip->toggled();
+		if (extensions != settings->noWarningExtensions()
+			|| ipRevealWarning != settings->ipRevealWarning()) {
+			settings->setNoWarningExtensions(std::move(extensions));
+			settings->setIpRevealWarning(ipRevealWarning);
+			Core::App().saveSettingsDelayed();
+		}
+		box->closeBox();
+
+	});
+	box->addButton(tr::lng_cancel(), [=] { box->closeBox(); });
+}
+
+QString PrivacyBase(Privacy::Key key, const Privacy::Rule &rule) {
 	using Key = Privacy::Key;
 	using Option = Privacy::Option;
 	switch (key) {
 	case Key::CallsPeer2Peer:
-		switch (option) {
+		switch (rule.option) {
 		case Option::Everyone:
 			return tr::lng_edit_privacy_calls_p2p_everyone(tr::now);
 		case Option::Contacts:
@@ -83,12 +182,27 @@ QString PrivacyBase(Privacy::Key key, Privacy::Option option) {
 		case Option::Nobody:
 			return tr::lng_edit_privacy_calls_p2p_nobody(tr::now);
 		}
-		Unexpected("Value in Privacy::Option.");
+		[[fallthrough]];
 	default:
-		switch (option) {
-		case Option::Everyone: return tr::lng_edit_privacy_everyone(tr::now);
-		case Option::Contacts: return tr::lng_edit_privacy_contacts(tr::now);
-		case Option::Nobody: return tr::lng_edit_privacy_nobody(tr::now);
+		switch (rule.option) {
+		case Option::Everyone:
+			return rule.never.miniapps
+				? tr::lng_edit_privacy_no_miniapps(tr::now)
+				: tr::lng_edit_privacy_everyone(tr::now);
+		case Option::Contacts:
+			return rule.always.premiums
+				? tr::lng_edit_privacy_contacts_and_premium(tr::now)
+				: rule.always.miniapps
+				? tr::lng_edit_privacy_contacts_and_miniapps(tr::now)
+				: tr::lng_edit_privacy_contacts(tr::now);
+		case Option::CloseFriends:
+			return tr::lng_edit_privacy_close_friends(tr::now);
+		case Option::Nobody:
+			return rule.always.premiums
+				? tr::lng_edit_privacy_premium(tr::now)
+				: rule.always.miniapps
+				? tr::lng_edit_privacy_miniapps(tr::now)
+				: tr::lng_edit_privacy_nobody(tr::now);
 		}
 		Unexpected("Value in Privacy::Option.");
 	}
@@ -102,49 +216,51 @@ rpl::producer<QString> PrivacyString(
 		key
 	) | rpl::map([=](const Privacy::Rule &value) {
 		auto add = QStringList();
-		if (const auto never = ExceptionUsersCount(value.never)) {
+		if (const auto never = ExceptionUsersCount(value.never.peers)) {
 			add.push_back("-" + QString::number(never));
 		}
-		if (const auto always = ExceptionUsersCount(value.always)) {
+		if (const auto always = ExceptionUsersCount(value.always.peers)) {
 			add.push_back("+" + QString::number(always));
 		}
 		if (!add.isEmpty()) {
-			return PrivacyBase(key, value.option)
+			return PrivacyBase(key, value)
 				+ " (" + add.join(", ") + ")";
 		} else {
-			return PrivacyBase(key, value.option);
+			return PrivacyBase(key, value);
 		}
 	});
 }
 
+#if 0 // Dead code.
 void AddPremiumPrivacyButton(
 		not_null<Window::SessionController*> controller,
 		not_null<Ui::VerticalLayout*> container,
 		rpl::producer<QString> label,
-		IconDescriptor &&descriptor,
 		Privacy::Key key,
 		Fn<std::unique_ptr<EditPrivacyController>()> controllerFactory) {
 	const auto shower = Ui::CreateChild<rpl::lifetime>(container.get());
 	const auto session = &controller->session();
-	const auto &st = st::settingsButton;
-	const auto button = AddButton(
+	const auto &st = st::settingsButtonNoIcon;
+	const auto button = container->add(object_ptr<Button>(
 		container,
 		rpl::duplicate(label),
-		st,
-		std::move(descriptor));
+		st));
+
+	AddPremiumStar(button, session, rpl::duplicate(label), st.padding);
+
 	struct State {
 		State(QWidget *parent) : widget(parent) {
 			widget.setAttribute(Qt::WA_TransparentForMouseEvents);
 		}
 		Ui::RpWidget widget;
 	};
-	const auto state = button->lifetime().make_state<State>(button.get());
+	const auto state = button->lifetime().make_state<State>(button);
 	using WeakToast = base::weak_ptr<Ui::Toast::Instance>;
 	const auto toast = std::make_shared<WeakToast>();
 
 	{
 		const auto rightLabel = Ui::CreateChild<Ui::FlatLabel>(
-			button.get(),
+			button,
 			st.rightLabel);
 
 		state->widget.resize(st::settingsPremiumLock.size());
@@ -190,18 +306,15 @@ void AddPremiumPrivacyButton(
 
 	const auto showToast = [=] {
 		auto link = Ui::Text::Link(
-			tr::lng_settings_privacy_premium_link(tr::now));
-		link.entities.push_back(
-			EntityInText(EntityType::Semibold, 0, link.text.size()));
-		const auto config = Ui::Toast::Config{
+			Ui::Text::Semibold(
+				tr::lng_settings_privacy_premium_link(tr::now)));
+		(*toast) = controller->showToast({
 			.text = tr::lng_settings_privacy_premium(
 				tr::now,
 				lt_link,
 				link,
 				Ui::Text::WithEntities),
-			.st = &st::defaultMultilineToast,
-			.durationMs = Ui::Toast::kDefaultDuration * 2,
-			.multiline = true,
+			.duration = Ui::Toast::kDefaultDuration * 2,
 			.filter = crl::guard(&controller->session(), [=](
 					const ClickHandlerPtr &,
 					Qt::MouseButton button) {
@@ -215,10 +328,7 @@ void AddPremiumPrivacyButton(
 				}
 				return false;
 			}),
-		};
-		(*toast) = Ui::Toast::Show(
-			Window::Show(controller).toastParent(),
-			config);
+		});
 	};
 	button->addClickHandler([=] {
 		if (!session->premium()) {
@@ -232,11 +342,37 @@ void AddPremiumPrivacyButton(
 		) | rpl::take(
 			1
 		) | rpl::start_with_next([=](const Privacy::Rule &value) {
-			controller->show(
-				Box<EditPrivacyBox>(controller, controllerFactory(), value),
-				Ui::LayerOption::KeepOther);
+			controller->show(Box<EditPrivacyBox>(
+				controller,
+				controllerFactory(),
+				value));
 		});
 	});
+}
+#endif
+
+void AddMessagesPrivacyButton(
+		not_null<Window::SessionController*> controller,
+		not_null<Ui::VerticalLayout*> container) {
+	const auto session = &controller->session();
+	const auto privacy = &session->api().globalPrivacy();
+	auto label = rpl::conditional(
+		privacy->newRequirePremium(),
+		tr::lng_edit_privacy_contacts_and_premium(),
+		tr::lng_edit_privacy_everyone());
+	const auto &st = st::settingsButtonNoIcon;
+	const auto button = AddButtonWithLabel(
+		container,
+		tr::lng_settings_messages_privacy(),
+		rpl::duplicate(label),
+		st,
+		{});
+	button->addClickHandler([=] {
+		controller->show(Box(EditMessagesPrivacyBox, controller));
+	});
+	if (!session->appConfig().newRequirePremiumFree()) {
+		AddPremiumStar(button, session, rpl::duplicate(label), st.padding);
+	}
 }
 
 rpl::producer<int> BlockedPeersCount(not_null<::Main::Session*> session) {
@@ -250,116 +386,79 @@ void SetupPrivacy(
 		not_null<Window::SessionController*> controller,
 		not_null<Ui::VerticalLayout*> container,
 		rpl::producer<> updateTrigger) {
-	AddSkip(container, st::settingsPrivacySkip);
-	AddSubsectionTitle(container, tr::lng_settings_privacy_title());
+	Ui::AddSkip(container, st::settingsPrivacySkip);
+	Ui::AddSubsectionTitle(container, tr::lng_settings_privacy_title());
 
 	const auto session = &controller->session();
 
 	using Key = Privacy::Key;
 	const auto add = [&](
 			rpl::producer<QString> label,
-			IconDescriptor &&descriptor,
 			Key key,
 			auto controllerFactory) {
-		AddPrivacyButton(
+		return AddPrivacyButton(
 			controller,
 			container,
 			std::move(label),
-			std::move(descriptor),
+			{},
 			key,
 			controllerFactory);
 	};
 	add(
 		tr::lng_settings_phone_number_privacy(),
-		{ &st::settingsIconCalls, kIconGreen },
 		Key::PhoneNumber,
 		[=] { return std::make_unique<PhoneNumberPrivacyController>(
 			controller); });
 	add(
 		tr::lng_settings_last_seen(),
-		{ &st::settingsIconOnline, kIconLightBlue },
 		Key::LastSeen,
-		[=] { return std::make_unique<LastSeenPrivacyController>(session); });
+		[=] { return std::make_unique<LastSeenPrivacyController>(
+			session); });
 	add(
 		tr::lng_settings_profile_photo_privacy(),
-		{ &st::settingsIconAccount, kIconRed },
 		Key::ProfilePhoto,
 		[] { return std::make_unique<ProfilePhotoPrivacyController>(); });
 	add(
+		tr::lng_settings_bio_privacy(),
+		Key::About,
+		[] { return std::make_unique<AboutPrivacyController>(); });
+	add(
+		tr::lng_settings_gifts_privacy(),
+		Key::GiftsAutoSave,
+		[=] { return std::make_unique<GiftsAutoSavePrivacyController>(); });
+	add(
+		tr::lng_settings_birthday_privacy(),
+		Key::Birthday,
+		[] { return std::make_unique<BirthdayPrivacyController>(); });
+	add(
 		tr::lng_settings_forwards_privacy(),
-		{ &st::settingsIconForward, kIconLightOrange },
 		Key::Forwards,
 		[=] { return std::make_unique<ForwardsPrivacyController>(
 			controller); });
 	add(
 		tr::lng_settings_calls(),
-		{ &st::settingsIconVideoCalls, kIconGreen },
 		Key::Calls,
 		[] { return std::make_unique<CallsPrivacyController>(); });
 	add(
 		tr::lng_settings_groups_invite(),
-		{ &st::settingsIconGroup, kIconDarkBlue },
 		Key::Invites,
 		[] { return std::make_unique<GroupsInvitePrivacyController>(); });
-	AddPremiumPrivacyButton(
-		controller,
-		container,
-		tr::lng_settings_voices_privacy(),
-		{ &st::settingsPremiumIconVoice, kIconRed },
-		Key::Voices,
-		[=] { return std::make_unique<VoicesPrivacyController>(session); });
+	{
+		const auto &phrase = tr::lng_settings_voices_privacy;
+		const auto &st = st::settingsButtonNoIcon;
+		auto callback = [=] {
+			return std::make_unique<VoicesPrivacyController>(session);
+		};
+		const auto voices = add(phrase(), Key::Voices, std::move(callback));
+		AddPremiumStar(voices, session, phrase(), st.padding);
+	}
+	AddMessagesPrivacyButton(controller, container);
 
-	session->api().userPrivacy().reload(Api::UserPrivacy::Key::AddedByPhone);
+	session->api().userPrivacy().reload(
+		Api::UserPrivacy::Key::AddedByPhone);
 
-	AddSkip(container, st::settingsPrivacySecurityPadding);
-	AddDivider(container);
-}
-
-void SetupArchiveAndMute(
-		not_null<Window::SessionController*> controller,
-		not_null<Ui::VerticalLayout*> container) {
-	using namespace rpl::mappers;
-
-	const auto wrap = container->add(
-		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
-			container,
-			object_ptr<Ui::VerticalLayout>(container)));
-	const auto inner = wrap->entity();
-
-	AddSkip(inner);
-	AddSubsectionTitle(inner, tr::lng_settings_new_unknown());
-
-	const auto session = &controller->session();
-
-	const auto privacy = &session->api().globalPrivacy();
-	privacy->reload();
-	AddButton(
-		inner,
-		tr::lng_settings_auto_archive(),
-		st::settingsButtonNoIcon
-	)->toggleOn(
-		privacy->archiveAndMute()
-	)->toggledChanges(
-	) | rpl::filter([=](bool toggled) {
-		return toggled != privacy->archiveAndMuteCurrent();
-	}) | rpl::start_with_next([=](bool toggled) {
-		privacy->update(toggled);
-	}, container->lifetime());
-
-	AddSkip(inner);
-	AddDividerText(inner, tr::lng_settings_auto_archive_about());
-
-	auto shown = rpl::single(
-		false
-	) | rpl::then(session->api().globalPrivacy().showArchiveAndMute(
-	) | rpl::filter(_1) | rpl::take(1));
-	auto premium = Data::AmPremiumValue(&controller->session());
-
-	using namespace rpl::mappers;
-	wrap->toggleOn(rpl::combine(
-		std::move(shown),
-		std::move(premium),
-		_1 || _2));
+	Ui::AddSkip(container, st::settingsPrivacySecurityPadding);
+	Ui::AddDivider(container);
 }
 
 void SetupLocalPasscode(
@@ -383,7 +482,7 @@ void SetupLocalPasscode(
 		tr::lng_settings_passcode_title(),
 		std::move(label),
 		st::settingsButton,
-		{ &st::settingsIconLock, kIconGreen }
+		{ &st::menuIconLock }
 	)->addClickHandler([=] {
 		if (controller->session().domain().local().hasLocalPasscode()) {
 			showOther(LocalPasscodeCheckId());
@@ -433,7 +532,7 @@ void SetupCloudPassword(
 		tr::lng_settings_cloud_password_start_title(),
 		std::move(label),
 		st::settingsButton,
-		{ &st::settingsIconKey, kIconLightBlue }
+		{ &st::menuIconPermissions }
 	)->addClickHandler([=, passwordState = base::duplicate(passwordState)] {
 		const auto state = rpl::variable<PasswordState>(
 			base::duplicate(passwordState)).current();
@@ -462,53 +561,41 @@ void SetupCloudPassword(
 	session->api().cloudPassword().reload();
 }
 
-void SetupSensitiveContent(
+void SetupTopPeers(
 		not_null<Window::SessionController*> controller,
-		not_null<Ui::VerticalLayout*> container,
-		rpl::producer<> updateTrigger) {
-	using namespace rpl::mappers;
-
-	const auto wrap = container->add(
-		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
-			container,
-			object_ptr<Ui::VerticalLayout>(container)));
-	const auto inner = wrap->entity();
-
-	AddSkip(inner);
-	AddSubsectionTitle(inner, tr::lng_settings_sensitive_title());
+		not_null<Ui::VerticalLayout*> container) {
+	Ui::AddSkip(container);
+	Ui::AddSubsectionTitle(container, tr::lng_settings_top_peers_title());
 
 	const auto session = &controller->session();
 
-	std::move(
-		updateTrigger
-	) | rpl::start_with_next([=] {
-		session->api().sensitiveContent().reload();
-	}, container->lifetime());
-	AddButton(
-		inner,
-		tr::lng_settings_sensitive_disable_filtering(),
+	container->add(object_ptr<Button>(
+		container,
+		tr::lng_settings_top_peers_suggest(),
 		st::settingsButtonNoIcon
-	)->toggleOn(
-		session->api().sensitiveContent().enabled()
-	)->toggledChanges(
-	) | rpl::filter([=](bool toggled) {
-		return toggled != session->api().sensitiveContent().enabledCurrent();
-	}) | rpl::start_with_next([=](bool toggled) {
-		session->api().sensitiveContent().update(toggled);
+	))->toggleOn(rpl::single(
+		rpl::empty
+	) | rpl::then(
+		session->topPeers().updates()
+	) | rpl::map([=] {
+		return !session->topPeers().disabled();
+	}))->toggledChanges(
+	) | rpl::filter([=](bool enabled) {
+		return enabled == session->topPeers().disabled();
+	}) | rpl::start_with_next([=](bool enabled) {
+		session->topPeers().toggleDisabled(!enabled);
 	}, container->lifetime());
 
-	AddSkip(inner);
-	AddDividerText(inner, tr::lng_settings_sensitive_about());
-
-	wrap->toggleOn(session->api().sensitiveContent().canChange());
+	Ui::AddSkip(container);
+	Ui::AddDividerText(container, tr::lng_settings_top_peers_about());
 }
 
 void SetupSelfDestruction(
 		not_null<Window::SessionController*> controller,
 		not_null<Ui::VerticalLayout*> container,
 		rpl::producer<> updateTrigger) {
-	AddSkip(container);
-	AddSubsectionTitle(container, tr::lng_settings_destroy_title());
+	Ui::AddSkip(container);
+	Ui::AddSubsectionTitle(container, tr::lng_settings_destroy_title());
 
 	const auto session = &controller->session();
 
@@ -534,7 +621,7 @@ void SetupSelfDestruction(
 			session->api().selfDestruct().daysAccountTTL()));
 	});
 
-	AddSkip(container);
+	Ui::AddSkip(container);
 }
 
 void ClearPaymentInfoBoxBuilder(
@@ -599,19 +686,43 @@ auto ClearPaymentInfoBox(not_null<Main::Session*> session) {
 void SetupBotsAndWebsites(
 		not_null<Window::SessionController*> controller,
 		not_null<Ui::VerticalLayout*> container) {
-	AddSkip(container);
-	AddSubsectionTitle(container, tr::lng_settings_security_bots());
+	Ui::AddSkip(container);
+	Ui::AddSubsectionTitle(container, tr::lng_settings_security_bots());
 
 	const auto session = &controller->session();
-	AddButton(
+	container->add(object_ptr<Button>(
 		container,
 		tr::lng_settings_clear_payment_info(),
 		st::settingsButtonNoIcon
-	)->addClickHandler([=] {
+	))->addClickHandler([=] {
 		controller->show(ClearPaymentInfoBox(session));
 	});
 
-	AddSkip(container);
+	Ui::AddSkip(container);
+	Ui::AddDivider(container);
+}
+
+void SetupConfirmationExtensions(
+		not_null<Window::SessionController*> controller,
+		not_null<Ui::VerticalLayout*> container) {
+	if (Core::App().settings().noWarningExtensions().empty()
+		&& Core::App().settings().ipRevealWarning()) {
+		return;
+	}
+
+	Ui::AddSkip(container);
+	Ui::AddSubsectionTitle(container, tr::lng_settings_file_confirmations());
+
+	container->add(object_ptr<Button>(
+		container,
+		tr::lng_settings_edit_extensions(),
+		st::settingsButtonNoIcon
+	))->addClickHandler([=] {
+		controller->show(Box(OpenFileConfirmationsBox));
+	});
+
+	Ui::AddSkip(container);
+	Ui::AddDividerText(container, tr::lng_settings_edit_extensions_about());
 }
 
 void SetupBlockedList(
@@ -631,7 +742,7 @@ void SetupBlockedList(
 		tr::lng_settings_blocked_users(),
 		std::move(blockedCount),
 		st::settingsButton,
-		{ &st::settingsIconMinus, kIconRed });
+		{ &st::menuIconBlock });
 	blockedPeers->addClickHandler([=] {
 		showOther(Blocked::Id());
 	});
@@ -640,6 +751,44 @@ void SetupBlockedList(
 	) | rpl::start_with_next([=] {
 		session->api().blockedPeers().reload();
 	}, blockedPeers->lifetime());
+}
+
+void SetupWebsitesList(
+		not_null<Window::SessionController*> controller,
+		not_null<Ui::VerticalLayout*> container,
+		rpl::producer<> updateTrigger,
+		Fn<void(Type)> showOther) {
+	std::move(
+		updateTrigger
+	) | rpl::start_with_next([=] {
+		controller->session().api().websites().reload();
+	}, container->lifetime());
+
+	auto count = controller->session().api().websites().totalValue();
+	auto countText = rpl::duplicate(
+		count
+	) | rpl::filter(rpl::mappers::_1 > 0) | rpl::map([](int count) {
+		return QString::number(count);
+	});
+
+	const auto wrap = container->add(
+		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+			container,
+			object_ptr<Ui::VerticalLayout>(container)));
+	const auto inner = wrap->entity();
+
+	AddButtonWithLabel(
+		inner,
+		tr::lng_settings_logged_in(),
+		std::move(countText),
+		st::settingsButton,
+		{ &st::menuIconIpAddress }
+	)->addClickHandler([=] {
+		showOther(Websites::Id());
+	});
+
+	wrap->toggleOn(std::move(count) | rpl::map(rpl::mappers::_1 > 0));
+	wrap->finishAnimating();
 }
 
 void SetupSessionsList(
@@ -653,7 +802,7 @@ void SetupSessionsList(
 		controller->session().api().authorizations().reload();
 	}, container->lifetime());
 
-	auto count = controller->session().api().authorizations().totalChanges(
+	auto count = controller->session().api().authorizations().totalValue(
 	) | rpl::map([](int count) {
 		return count ? QString::number(count) : QString();
 	});
@@ -663,10 +812,13 @@ void SetupSessionsList(
 		tr::lng_settings_show_sessions(),
 		std::move(count),
 		st::settingsButton,
-		{ &st::settingsIconLaptop, kIconLightOrange }
+		{ &st::menuIconDevices }
 	)->addClickHandler([=] {
 		showOther(Sessions::Id());
 	});
+
+	Ui::AddSkip(container);
+	Ui::AddDividerText(container, tr::lng_settings_sessions_about());
 }
 
 void SetupGlobalTTLList(
@@ -686,7 +838,7 @@ void SetupGlobalTTLList(
 		tr::lng_settings_ttl_title(),
 		std::move(ttlLabel),
 		st::settingsButton,
-		{ &st::settingsIconTTL, kIconPurple });
+		{ &st::menuIconTTL });
 	globalTTLButton->addClickHandler([=] {
 		showOther(GlobalTTLId());
 	});
@@ -695,9 +847,6 @@ void SetupGlobalTTLList(
 	) | rpl::start_with_next([=] {
 		session->api().selfDestruct().reload();
 	}, container->lifetime());
-
-	AddSkip(container);
-	AddDividerText(container, tr::lng_settings_ttl_about());
 }
 
 void SetupSecurity(
@@ -705,10 +854,22 @@ void SetupSecurity(
 		not_null<Ui::VerticalLayout*> container,
 		rpl::producer<> updateTrigger,
 		Fn<void(Type)> showOther) {
-	AddSkip(container, st::settingsPrivacySkip);
-	AddSubsectionTitle(container, tr::lng_settings_security());
+	Ui::AddSkip(container, st::settingsPrivacySkip);
+	Ui::AddSubsectionTitle(container, tr::lng_settings_security());
 
+	SetupCloudPassword(controller, container, showOther);
+	SetupGlobalTTLList(
+		controller,
+		container,
+		rpl::duplicate(updateTrigger),
+		showOther);
+	SetupLocalPasscode(controller, container, showOther);
 	SetupBlockedList(
+		controller,
+		container,
+		rpl::duplicate(updateTrigger),
+		showOther);
+	SetupWebsitesList(
 		controller,
 		container,
 		rpl::duplicate(updateTrigger),
@@ -718,16 +879,50 @@ void SetupSecurity(
 		container,
 		rpl::duplicate(updateTrigger),
 		showOther);
-	SetupLocalPasscode(controller, container, showOther);
-	SetupCloudPassword(controller, container, showOther);
-	SetupGlobalTTLList(
-		controller,
-		container,
-		rpl::duplicate(updateTrigger),
-		showOther);
 }
 
 } // namespace
+
+void SetupSensitiveContent(
+		not_null<Window::SessionController*> controller,
+		not_null<Ui::VerticalLayout*> container,
+		rpl::producer<> updateTrigger) {
+	using namespace rpl::mappers;
+
+	const auto wrap = container->add(
+		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+			container,
+			object_ptr<Ui::VerticalLayout>(container)));
+	const auto inner = wrap->entity();
+
+	Ui::AddSkip(inner);
+	Ui::AddSubsectionTitle(inner, tr::lng_settings_sensitive_title());
+
+	const auto session = &controller->session();
+
+	std::move(
+		updateTrigger
+	) | rpl::start_with_next([=] {
+		session->api().sensitiveContent().reload();
+	}, container->lifetime());
+	inner->add(object_ptr<Button>(
+		inner,
+		tr::lng_settings_sensitive_disable_filtering(),
+		st::settingsButtonNoIcon
+	))->toggleOn(
+		session->api().sensitiveContent().enabled()
+	)->toggledChanges(
+	) | rpl::filter([=](bool toggled) {
+		return toggled != session->api().sensitiveContent().enabledCurrent();
+	}) | rpl::start_with_next([=](bool toggled) {
+		session->api().sensitiveContent().update(toggled);
+	}, container->lifetime());
+
+	Ui::AddSkip(inner);
+	Ui::AddDividerText(inner, tr::lng_settings_sensitive_about());
+
+	wrap->toggleOn(session->api().sensitiveContent().canChange());
+}
 
 int ExceptionUsersCount(const std::vector<not_null<PeerData*>> &exceptions) {
 	const auto add = [](int already, not_null<PeerData*> peer) {
@@ -812,32 +1007,82 @@ object_ptr<Ui::BoxContent> CloudPasswordAppOutdatedBox() {
 	});
 }
 
-void AddPrivacyButton(
+not_null<Ui::SettingsButton*> AddPrivacyButton(
 		not_null<Window::SessionController*> controller,
 		not_null<Ui::VerticalLayout*> container,
 		rpl::producer<QString> label,
 		IconDescriptor &&descriptor,
 		Privacy::Key key,
-		Fn<std::unique_ptr<EditPrivacyController>()> controllerFactory) {
+		Fn<std::unique_ptr<EditPrivacyController>()> controllerFactory,
+		const style::SettingsButton *stOverride) {
 	const auto shower = Ui::CreateChild<rpl::lifetime>(container.get());
 	const auto session = &controller->session();
-	AddButtonWithLabel(
+	const auto button = AddButtonWithLabel(
 		container,
 		std::move(label),
 		PrivacyString(session, key),
-		st::settingsButton,
-		std::move(descriptor)
-	)->addClickHandler([=] {
+		stOverride ? *stOverride : st::settingsButtonNoIcon,
+		std::move(descriptor));
+	button->addClickHandler([=] {
 		*shower = session->api().userPrivacy().value(
 			key
 		) | rpl::take(
 			1
 		) | rpl::start_with_next([=](const Privacy::Rule &value) {
-			controller->show(
-				Box<EditPrivacyBox>(controller, controllerFactory(), value),
-				Ui::LayerOption::KeepOther);
+			controller->show(Box<EditPrivacyBox>(
+				controller,
+				controllerFactory(),
+				value));
 		});
 	});
+	return button;
+}
+
+void SetupArchiveAndMute(
+		not_null<Window::SessionController*> controller,
+		not_null<Ui::VerticalLayout*> container) {
+	using namespace rpl::mappers;
+
+	const auto wrap = container->add(
+		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+			container,
+			object_ptr<Ui::VerticalLayout>(container)));
+	const auto inner = wrap->entity();
+
+	Ui::AddSkip(inner);
+	Ui::AddSubsectionTitle(inner, tr::lng_settings_new_unknown());
+
+	const auto session = &controller->session();
+
+	const auto privacy = &session->api().globalPrivacy();
+	privacy->reload();
+	inner->add(object_ptr<Button>(
+		inner,
+		tr::lng_settings_auto_archive(),
+		st::settingsButtonNoIcon
+	))->toggleOn(
+		privacy->archiveAndMute()
+	)->toggledChanges(
+	) | rpl::filter([=](bool toggled) {
+		return toggled != privacy->archiveAndMuteCurrent();
+	}) | rpl::start_with_next([=](bool toggled) {
+		privacy->updateArchiveAndMute(toggled);
+	}, container->lifetime());
+
+	Ui::AddSkip(inner);
+	Ui::AddDividerText(inner, tr::lng_settings_auto_archive_about());
+
+	auto shown = rpl::single(
+		false
+	) | rpl::then(session->api().globalPrivacy().showArchiveAndMute(
+	) | rpl::filter(_1) | rpl::take(1));
+	auto premium = Data::AmPremiumValue(&controller->session());
+
+	using namespace rpl::mappers;
+	wrap->toggleOn(rpl::combine(
+		std::move(shown),
+		std::move(premium),
+		_1 || _2));
 }
 
 PrivacySecurity::PrivacySecurity(
@@ -845,14 +1090,12 @@ PrivacySecurity::PrivacySecurity(
 	not_null<Window::SessionController*> controller)
 : Section(parent) {
 	setupContent(controller);
+
+	[[maybe_unused]] auto preload = base::SystemUnlockStatus();
 }
 
 rpl::producer<QString> PrivacySecurity::title() {
 	return tr::lng_settings_section_privacy();
-}
-
-rpl::producer<Type> PrivacySecurity::sectionShowOther() {
-	return _showOther.events();
 }
 
 void PrivacySecurity::setupContent(
@@ -865,18 +1108,12 @@ void PrivacySecurity::setupContent(
 		return rpl::duplicate(updateOnTick);
 	};
 
-	SetupSecurity(controller, content, trigger(), [=](Type type) {
-		_showOther.fire_copy(type);
-	});
+	SetupSecurity(controller, content, trigger(), showOtherMethod());
 	SetupPrivacy(controller, content, trigger());
-#if !defined OS_MAC_STORE && !defined OS_WIN_STORE
-	SetupSensitiveContent(controller, content, trigger());
-#else // !OS_MAC_STORE && !OS_WIN_STORE
-	AddDivider(content);
-#endif // !OS_MAC_STORE && !OS_WIN_STORE
+	SetupTopPeers(controller, content);
 	SetupArchiveAndMute(controller, content);
+	SetupConfirmationExtensions(controller, content);
 	SetupBotsAndWebsites(controller, content);
-	AddDivider(content);
 	SetupSelfDestruction(controller, content, trigger());
 
 	Ui::ResizeFitChild(this, content);

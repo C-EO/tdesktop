@@ -7,8 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "media/clip/media_clip_reader.h"
+#include "chat_helpers/compose/compose_features.h"
 #include "chat_helpers/tabbed_selector.h"
+#include "media/clip/media_clip_reader.h"
 #include "mtproto/sender.h"
 #include "ui/dpr/dpr_image.h"
 #include "ui/round_rect.h"
@@ -18,6 +19,10 @@ namespace Ui {
 class InputField;
 class CrossButton;
 } // namespace Ui
+
+namespace Ui::Text {
+class CustomEmoji;
+} // namespace Ui::Text
 
 namespace Data {
 class StickersSet;
@@ -114,10 +119,12 @@ class StickersListFooter final : public TabbedSelector::InnerFooter {
 public:
 	struct Descriptor {
 		not_null<Main::Session*> session;
+		Fn<QColor()> customTextColor;
 		Fn<bool()> paused;
 		not_null<RpWidget*> parent;
-		bool settingsButtonVisible = false;
 		const style::EmojiPan *st = nullptr;
+		ComposeFeatures features;
+		bool forceFirstFrame = false;
 	};
 	explicit StickersListFooter(Descriptor &&descriptor);
 
@@ -130,7 +137,6 @@ public:
 		uint64 activeSetId,
 		Fn<std::shared_ptr<Lottie::FrameRenderer>()> renderer,
 		ValidateIconAnimations animations);
-	[[nodiscard]] bool hasOnlyFeaturedSets() const;
 
 	void leaveToChildEvent(QEvent *e, QWidget *child) override;
 
@@ -269,8 +275,9 @@ private:
 	void clipCallback(Media::Clip::Notification notification, uint64 setId);
 
 	const not_null<Main::Session*> _session;
+	const Fn<QColor()> _customTextColor;
 	const Fn<bool()> _paused;
-	const bool _settingsButtonVisible = false;
+	const ComposeFeatures _features;
 
 	static constexpr auto kVisibleIconsCount = 8;
 
@@ -303,6 +310,7 @@ private:
 	int _subiconsWidth = 0;
 	bool _subiconsExpanded = false;
 	bool _repaintScheduled = false;
+	bool _forceFirstFrame = false;
 
 	rpl::event_stream<> _openSettingsRequests;
 	rpl::event_stream<uint64> _setChosen;

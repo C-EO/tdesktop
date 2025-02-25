@@ -20,6 +20,8 @@ namespace Media::View {
 inline constexpr auto kMaximizedIconOpacity = 0.6;
 inline constexpr auto kNormalIconOpacity = 0.9;
 inline constexpr auto kOverBackgroundOpacity = 0.2775;
+inline constexpr auto kStoriesNavOpacity = 0.3;
+inline constexpr auto kStoriesNavOverOpacity = 0.7;
 [[nodiscard]] QColor OverBackgroundColor();
 
 } // namespace Media::View
@@ -56,6 +58,9 @@ public:
 	-> rpl::producer<not_null<QMouseEvent*>> {
 		return rpl::never<not_null<QMouseEvent*>>();
 	}
+	[[nodiscard]] virtual rpl::producer<int> topNotchSkipValue() {
+		return rpl::single(0);
+	}
 };
 
 [[nodiscard]] std::unique_ptr<OverlayWidgetHelper> CreateOverlayWidgetHelper(
@@ -90,10 +95,10 @@ private:
 
 // Platform dependent implementations.
 
-#ifdef Q_OS_MAC
-#include "platform/mac/overlay_widget_mac.h"
-#elif defined Q_OS_UNIX // Q_OS_MAC
-#include "platform/linux/overlay_widget_linux.h"
-#elif defined Q_OS_WIN // Q_OS_MAC || Q_OS_UNIX
+#ifdef Q_OS_WIN
 #include "platform/win/overlay_widget_win.h"
-#endif // Q_OS_MAC || Q_OS_UNIX || Q_OS_WIN
+#elif defined Q_OS_MAC // Q_OS_WIN
+#include "platform/mac/overlay_widget_mac.h"
+#else // Q_OS_WIN || Q_OS_MAC
+#include "platform/linux/overlay_widget_linux.h"
+#endif // else for Q_OS_WIN || Q_OS_MAC

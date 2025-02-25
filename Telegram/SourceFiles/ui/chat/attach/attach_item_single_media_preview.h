@@ -32,6 +32,7 @@ class ItemSingleMediaPreview final : public AbstractSingleMediaPreview {
 public:
 	ItemSingleMediaPreview(
 		QWidget *parent,
+		const style::ComposeControls &st,
 		Fn<bool()> gifPaused,
 		not_null<HistoryItem*> item,
 		AttachControls::Type type);
@@ -55,6 +56,7 @@ private:
 	void startStreamedPlayer();
 
 	const Fn<bool()> _gifPaused;
+	const bool _isVideoFile;
 	const FullMsgId _fullId;
 
 	std::shared_ptr<::Data::PhotoMedia> _photoMedia;

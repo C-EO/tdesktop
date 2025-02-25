@@ -7,7 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "base/qt/qt_compare.h"
 #include "data/data_peer_id.h"
+#include "ui/text/text_entity.h"
 
 struct MsgId {
 	constexpr MsgId() noexcept = default;
@@ -51,18 +53,42 @@ Q_DECLARE_METATYPE(MsgId);
 	return MsgId(a.bare - b.bare);
 }
 
+using StoryId = int32;
+using BusinessShortcutId = int32;
+
+struct FullStoryId {
+	PeerId peer = 0;
+	StoryId story = 0;
+
+	[[nodiscard]] bool valid() const {
+		return peer != 0 && story != 0;
+	}
+	explicit operator bool() const {
+		return valid();
+	}
+	friend inline auto operator<=>(FullStoryId, FullStoryId) = default;
+	friend inline bool operator==(FullStoryId, FullStoryId) = default;
+};
+
 constexpr auto StartClientMsgId = MsgId(0x01 - (1LL << 58));
 constexpr auto ClientMsgIds = (1LL << 31);
 constexpr auto EndClientMsgId = MsgId(StartClientMsgId.bare + ClientMsgIds);
+constexpr auto StartStoryMsgId = MsgId(EndClientMsgId.bare + 1);
+constexpr auto ServerMaxStoryId = StoryId(1 << 30);
+constexpr auto StoryMsgIds = int64(ServerMaxStoryId);
+constexpr auto EndStoryMsgId = MsgId(StartStoryMsgId.bare + StoryMsgIds);
 constexpr auto ServerMaxMsgId = MsgId(1LL << 56);
-constexpr auto ScheduledMsgIdsRange = (1LL << 32);
+constexpr auto ScheduledMaxMsgId = MsgId(ServerMaxMsgId + (1LL << 32));
+constexpr auto ShortcutMaxMsgId = MsgId(ScheduledMaxMsgId + (1LL << 32));
 constexpr auto ShowAtUnreadMsgId = MsgId(0);
 
-constexpr auto SpecialMsgIdShift = EndClientMsgId.bare;
+constexpr auto SpecialMsgIdShift = EndStoryMsgId.bare;
 constexpr auto ShowAtTheEndMsgId = MsgId(SpecialMsgIdShift + 1);
 constexpr auto SwitchAtTopMsgId = MsgId(SpecialMsgIdShift + 2);
 constexpr auto ShowAndStartBotMsgId = MsgId(SpecialMsgIdShift + 4);
+constexpr auto ShowAndMaybeStartBotMsgId = MsgId(SpecialMsgIdShift + 5);
 constexpr auto ShowForChooseMessagesMsgId = MsgId(SpecialMsgIdShift + 6);
+constexpr auto kSearchQueryOffsetHint = -1;
 
 static_assert(SpecialMsgIdShift + 0xFF < 0);
 static_assert(-(SpecialMsgIdShift + 0xFF) > ServerMaxMsgId);
@@ -79,6 +105,20 @@ static_assert(-(SpecialMsgIdShift + 0xFF) > ServerMaxMsgId);
 	Expects(index >= 0);
 
 	return MsgId(StartClientMsgId.bare + index);
+}
+
+[[nodiscrd]] constexpr inline bool IsStoryMsgId(MsgId id) noexcept {
+	return (id >= StartStoryMsgId && id < EndStoryMsgId);
+}
+[[nodiscard]] constexpr inline StoryId StoryIdFromMsgId(MsgId id) noexcept {
+	Expects(IsStoryMsgId(id));
+
+	return StoryId(id.bare - StartStoryMsgId.bare);
+}
+[[nodiscard]] constexpr inline MsgId StoryIdToMsgId(StoryId id) noexcept {
+	Expects(id >= 0);
+
+	return MsgId(StartStoryMsgId.bare + id);
 }
 
 [[nodiscard]] constexpr inline bool IsServerMsgId(MsgId id) noexcept {
@@ -118,7 +158,36 @@ struct FullMsgId {
 	MsgId msg = 0;
 };
 
+#ifdef _DEBUG
+inline QDebug operator<<(QDebug debug, const FullMsgId &fullMsgId) {
+	debug.nospace()
+		<< "FullMsgId(peer: "
+		<< fullMsgId.peer.value
+		<< ", msg: "
+		<< fullMsgId.msg.bare
+		<< ")";
+	return debug;
+}
+#endif // _DEBUG
+
 Q_DECLARE_METATYPE(FullMsgId);
+
+struct FullReplyTo {
+	FullMsgId messageId;
+	TextWithEntities quote;
+	FullStoryId storyId;
+	MsgId topicRootId = 0;
+	int quoteOffset = 0;
+
+	[[nodiscard]] bool valid() const {
+		return messageId || (storyId && storyId.peer);
+	}
+	explicit operator bool() const {
+		return valid();
+	}
+	friend inline auto operator<=>(FullReplyTo, FullReplyTo) = default;
+	friend inline bool operator==(FullReplyTo, FullReplyTo) = default;
+};
 
 struct GlobalMsgId {
 	FullMsgId itemId;
@@ -142,6 +211,24 @@ template <>
 struct hash<MsgId> : private hash<int64> {
 	size_t operator()(MsgId value) const noexcept {
 		return hash<int64>::operator()(value.bare);
+	}
+};
+
+template <>
+struct hash<FullStoryId> {
+	size_t operator()(FullStoryId value) const {
+		return QtPrivate::QHashCombine().operator()(
+			std::hash<BareId>()(value.peer.value),
+			value.story);
+	}
+};
+
+template <>
+struct hash<FullMsgId> {
+	size_t operator()(FullMsgId value) const {
+		return QtPrivate::QHashCombine().operator()(
+			std::hash<BareId>()(value.peer.value),
+			value.msg.bare);
 	}
 };
 

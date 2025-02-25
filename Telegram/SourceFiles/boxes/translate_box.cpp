@@ -18,14 +18,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "main/main_session.h"
 #include "mtproto/sender.h"
-#include "settings/settings_common.h"
 #include "spellcheck/platform/platform_language.h"
 #include "ui/boxes/choose_language_box.h"
 #include "ui/effects/loading_element.h"
 #include "ui/layers/generic_box.h"
 #include "ui/text/text_utilities.h"
-#include "ui/toasts/common_toasts.h"
+#include "ui/vertical_list.h"
 #include "ui/painter.h"
+#include "ui/power_saving.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/labels.h"
 #include "ui/widgets/multi_select.h"
@@ -35,7 +35,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_chat_helpers.h"
 #include "styles/style_info.h" // inviteLinkListItem.
 #include "styles/style_layers.h"
-#include "styles/style_settings.h" // settingsSubsectionTitlePadding.
 
 #include <QLocale>
 
@@ -64,7 +63,7 @@ ShowButton::ShowButton(not_null<Ui::RpWidget*> parent)
 	_button.sizeValue(
 	) | rpl::start_with_next([=](const QSize &s) {
 		resize(
-			s.width() + st::emojiSuggestionsFadeRight.width(),
+			s.width() + st::defaultEmojiSuggestions.fadeRight.width(),
 			s.height());
 		_button.moveToRight(0, 0);
 	}, lifetime());
@@ -75,7 +74,7 @@ void ShowButton::paintEvent(QPaintEvent *e) {
 	auto p = QPainter(this);
 	const auto clip = e->rect();
 
-	const auto &icon = st::emojiSuggestionsFadeRight;
+	const auto &icon = st::defaultEmojiSuggestions.fadeRight;
 	const auto fade = QRect(0, 0, icon.width(), height());
 	if (fade.intersects(clip)) {
 		icon.fill(p, fade);
@@ -127,11 +126,19 @@ void TranslateBox(
 	const auto &stLabel = st::aboutLabel;
 	const auto lineHeight = stLabel.style.lineHeight;
 
-	Settings::AddSkip(container);
-	// Settings::AddSubsectionTitle(
+	Ui::AddSkip(container);
+	// Ui::AddSubsectionTitle(
 	// 	container,
 	// 	tr::lng_translate_box_original());
 
+	const auto animationsPaused = [] {
+		using Which = FlatLabel::WhichAnimationsPaused;
+		const auto emoji = On(PowerSaving::kEmojiChat);
+		const auto spoiler = On(PowerSaving::kChatSpoiler);
+		return emoji
+			? (spoiler ? Which::All : Which::CustomEmoji)
+			: (spoiler ? Which::Spoiler : Which::None);
+	};
 	const auto original = box->addRow(object_ptr<SlideWrap<FlatLabel>>(
 		box,
 		object_ptr<FlatLabel>(box, stLabel)));
@@ -140,6 +147,7 @@ void TranslateBox(
 			original->entity()->setContextMenuHook([](auto&&) {
 			});
 		}
+		original->entity()->setAnimationsPausedCallback(animationsPaused);
 		original->entity()->setMarkedText(
 			text,
 			Core::MarkedTextContext{
@@ -172,14 +180,14 @@ void TranslateBox(
 		show->toggleOn(show->entity()->clicks() | rpl::map_to(false));
 		original->toggleOn(show->entity()->clicks() | rpl::map_to(true));
 	}
-	Settings::AddSkip(container);
-	Settings::AddSkip(container);
-	Settings::AddDivider(container);
-	Settings::AddSkip(container);
+	Ui::AddSkip(container);
+	Ui::AddSkip(container);
+	Ui::AddDivider(container);
+	Ui::AddSkip(container);
 
 	{
-		const auto padding = st::settingsSubsectionTitlePadding;
-		const auto subtitle = Settings::AddSubsectionTitle(
+		const auto padding = st::defaultSubsectionTitlePadding;
+		const auto subtitle = Ui::AddSubsectionTitle(
 			container,
 			state->to.value() | rpl::map(LanguageName));
 
@@ -195,6 +203,7 @@ void TranslateBox(
 		box,
 		object_ptr<FlatLabel>(box, stLabel)));
 	translated->entity()->setSelectable(!hasCopyRestriction);
+	translated->entity()->setAnimationsPausedCallback(animationsPaused);
 
 	constexpr auto kMaxLines = 3;
 	container->resizeToWidth(box->width());
@@ -263,7 +272,7 @@ void TranslateBox(
 		if (loading->toggled()) {
 			return;
 		}
-		Ui::BoxShow(box).showBox(ChooseTranslateToBox(
+		box->uiShow()->showBox(ChooseTranslateToBox(
 			state->to.current(),
 			crl::guard(box, [=](LanguageId id) { state->to = id; })));
 	});
@@ -296,7 +305,7 @@ bool SkipTranslate(TextWithEntities textWithEntities) {
 	const auto skip = Core::App().settings().skipTranslationLanguages();
 	return result.known() && ranges::contains(skip, result);
 #else
-    return false;
+	return false;
 #endif
 }
 
@@ -314,11 +323,9 @@ object_ptr<BoxContent> EditSkipTranslationLanguages() {
 		}
 		if (already && selected->empty()) {
 			if (const auto strong = weak->data()) {
-				Ui::ShowMultilineToast({
-					.parentOverride = BoxShow(strong).toastParent(),
-					.text = { tr::lng_translate_settings_one(tr::now) },
-					.duration = kSkipAtLeastOneDuration,
-				});
+				strong->showToast(
+					tr::lng_translate_settings_one(tr::now),
+					kSkipAtLeastOneDuration);
 			}
 			return false;
 		}

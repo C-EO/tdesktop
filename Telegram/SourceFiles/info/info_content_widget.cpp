@@ -7,25 +7,28 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "info/info_content_widget.h"
 
-#include "window/window_session_controller.h"
-#include "ui/widgets/scroll_area.h"
-#include "ui/widgets/input_fields.h"
-#include "ui/wrap/padding_wrap.h"
-#include "ui/search_field_controller.h"
-#include "lang/lang_keys.h"
-#include "info/profile/info_profile_widget.h"
-#include "info/media/info_media_widget.h"
-#include "info/common_groups/info_common_groups_widget.h"
-#include "info/info_layer_widget.h"
-#include "info/info_section_widget.h"
-#include "info/info_controller.h"
+#include "api/api_who_reacted.h"
 #include "boxes/peer_list_box.h"
 #include "data/data_chat.h"
 #include "data/data_channel.h"
 #include "data/data_session.h"
 #include "data/data_forum_topic.h"
 #include "data/data_forum.h"
+#include "info/profile/info_profile_widget.h"
+#include "info/media/info_media_widget.h"
+#include "info/common_groups/info_common_groups_widget.h"
+#include "info/info_layer_widget.h"
+#include "info/info_section_widget.h"
+#include "info/info_controller.h"
+#include "lang/lang_keys.h"
 #include "main/main_session.h"
+#include "ui/widgets/scroll_area.h"
+#include "ui/widgets/fields/input_field.h"
+#include "ui/wrap/padding_wrap.h"
+#include "ui/search_field_controller.h"
+#include "ui/ui_utility.h"
+#include "window/window_peer_menu.h"
+#include "window/window_session_controller.h"
 #include "styles/style_info.h"
 #include "styles/style_profile.h"
 #include "styles/style_layers.h"
@@ -39,7 +42,11 @@ ContentWidget::ContentWidget(
 	not_null<Controller*> controller)
 : RpWidget(parent)
 , _controller(controller)
-, _scroll(this) {
+, _scroll(
+	this,
+	(_controller->wrap() == Wrap::Search
+		? st::infoSharedMediaScroll
+		: st::defaultScrollArea)) {
 	using namespace rpl::mappers;
 
 	setAttribute(Qt::WA_OpaquePaintEvent);
@@ -203,13 +210,25 @@ void ContentWidget::applyAdditionalScroll(int additionalScroll) {
 	}
 }
 
+void ContentWidget::applyMaxVisibleHeight(int maxVisibleHeight) {
+	if (_maxVisibleHeight != maxVisibleHeight) {
+		_maxVisibleHeight = maxVisibleHeight;
+		update();
+	}
+}
+
 rpl::producer<int> ContentWidget::desiredHeightValue() const {
 	using namespace rpl::mappers;
 	return rpl::combine(
 		_innerWrap->entity()->desiredHeightValue(),
 		_scrollTopSkip.value(),
 		_scrollBottomSkip.value()
-	) | rpl::map(_1 + _2 + _3);
+	//) | rpl::map(_1 + _2 + _3);
+	) | rpl::map([=](int desired, int, int) {
+		return desired
+			+ _scrollTopSkip.current()
+			+ _scrollBottomSkip.current();
+	});
 }
 
 rpl::producer<bool> ContentWidget::desiredShadowVisibility() const {
@@ -256,6 +275,36 @@ QRect ContentWidget::floatPlayerAvailableRect() const {
 	return mapToGlobal(_scroll->geometry());
 }
 
+void ContentWidget::fillTopBarMenu(const Ui::Menu::MenuCallback &addAction) {
+	const auto peer = _controller->key().peer();
+	const auto topic = _controller->key().topic();
+	if (!peer && !topic) {
+		return;
+	}
+
+	Window::FillDialogsEntryMenu(
+		_controller->parentController(),
+		Dialogs::EntryState{
+			.key = (topic
+				? Dialogs::Key{ topic }
+				: Dialogs::Key{ peer->owner().history(peer) }),
+			.section = Dialogs::EntryState::Section::Profile,
+		},
+		addAction);
+}
+
+void ContentWidget::checkBeforeCloseByEscape(Fn<void()> close) {
+	if (_searchField) {
+		if (!_searchField->empty()) {
+			_searchField->setText({});
+		} else {
+			close();
+		}
+	} else {
+		close();
+	}
+}
+
 rpl::producer<SelectedItems> ContentWidget::selectedListValue() const {
 	return rpl::single(SelectedItems(Storage::SharedMediaType::Photo));
 }
@@ -271,6 +320,11 @@ void ContentWidget::setViewport(
 	) | rpl::start_with_next([=](not_null<QEvent*> e) {
 		_scroll->viewportEvent(e);
 	}, _scroll->lifetime());
+}
+
+auto ContentWidget::titleStories()
+-> rpl::producer<Dialogs::Stories::Content> {
+	return nullptr;
 }
 
 void ContentWidget::saveChanges(FnMut<void()> done) {
@@ -312,7 +366,7 @@ rpl::producer<int> ContentWidget::scrollBottomSkipValue() const {
 	return _scrollBottomSkip.value();
 }
 
-rpl::producer<bool> ContentWidget::desiredBottomShadowVisibility() const {
+rpl::producer<bool> ContentWidget::desiredBottomShadowVisibility() {
 	using namespace rpl::mappers;
 	return rpl::combine(
 		_scroll->scrollTopValue(),
@@ -321,6 +375,10 @@ rpl::producer<bool> ContentWidget::desiredBottomShadowVisibility() const {
 	) | rpl::map([=](int scroll, int skip, int) {
 		return ((skip > 0) && (scroll < _scroll->scrollTopMax()));
 	});
+}
+
+not_null<Ui::ScrollArea*> ContentWidget::scroll() const {
+	return _scroll.data();
 }
 
 Key ContentMemento::key() const {
@@ -332,6 +390,16 @@ Key ContentMemento::key() const {
 		return Key(poll, pollContextId());
 	} else if (const auto self = settingsSelf()) {
 		return Settings::Tag{ self };
+	} else if (const auto stories = storiesPeer()) {
+		return Stories::Tag{ stories, storiesTab() };
+	} else if (statisticsTag().peer) {
+		return statisticsTag();
+	} else if (const auto starref = starrefPeer()) {
+		return BotStarRef::Tag(starref, starrefType());
+	} else if (const auto who = reactionsWhoReadIds()) {
+		return Key(who, _reactionsSelected, _pollReactionsContextId);
+	} else if (const auto another = globalMediaSelf()) {
+		return GlobalMedia::Tag{ another };
 	} else {
 		return Downloads::Tag();
 	}
@@ -361,6 +429,35 @@ ContentMemento::ContentMemento(Settings::Tag settings)
 }
 
 ContentMemento::ContentMemento(Downloads::Tag downloads) {
+}
+
+ContentMemento::ContentMemento(Stories::Tag stories)
+: _storiesPeer(stories.peer)
+, _storiesTab(stories.tab) {
+}
+
+ContentMemento::ContentMemento(Statistics::Tag statistics)
+: _statisticsTag(statistics) {
+}
+
+ContentMemento::ContentMemento(BotStarRef::Tag starref)
+: _starrefPeer(starref.peer)
+, _starrefType(starref.type) {
+}
+
+ContentMemento::ContentMemento(GlobalMedia::Tag global)
+: _globalMediaSelf(global.self) {
+}
+
+ContentMemento::ContentMemento(
+	std::shared_ptr<Api::WhoReadList> whoReadIds,
+	FullMsgId contextId,
+	Data::ReactionId selected)
+: _reactionsWhoReadIds(whoReadIds
+	? whoReadIds
+	: std::make_shared<Api::WhoReadList>())
+, _reactionsSelected(selected)
+, _pollReactionsContextId(contextId) {
 }
 
 } // namespace Info

@@ -15,12 +15,12 @@ enum class SharedMediaType : signed char;
 } // namespace Storage
 
 namespace Ui {
-class SettingsSlider;
 class FadeShadow;
 class PlainShadow;
 class PopupMenu;
 class IconButton;
 class RoundRect;
+struct StringWithNumbers;
 } // namespace Ui
 
 namespace Window {
@@ -49,6 +49,7 @@ enum class Wrap {
 	Layer,
 	Narrow,
 	Side,
+	Search,
 };
 
 struct SelectedItem {
@@ -58,14 +59,15 @@ struct SelectedItem {
 	GlobalMsgId globalId;
 	bool canDelete = false;
 	bool canForward = false;
+	bool canToggleStoryPin = false;
+	bool canUnpinStory = false;
 };
 
 struct SelectedItems {
-	explicit SelectedItems(Storage::SharedMediaType type)
-	: type(type) {
-	}
+	SelectedItems() = default;
+	explicit SelectedItems(Storage::SharedMediaType type);
 
-	Storage::SharedMediaType type;
+	Fn<Ui::StringWithNumbers(int)> title;
 	std::vector<SelectedItem> list;
 };
 
@@ -73,6 +75,8 @@ enum class SelectionAction {
 	Clear,
 	Forward,
 	Delete,
+	ToggleStoryPin,
+	ToggleStoryInProfile,
 };
 
 class WrapWidget final : public Window::SectionWidget {
@@ -123,7 +127,8 @@ public:
 	void updateGeometry(
 		QRect newGeometry,
 		bool expanding,
-		int additionalScroll);
+		int additionalScroll,
+		int maxVisibleHeight);
 	[[nodiscard]] int scrollBottomSkip() const;
 	[[nodiscard]] int scrollTillBottom(int forHeight) const;
 	[[nodiscard]] rpl::producer<int> scrollTillBottomChanges() const;
@@ -157,6 +162,7 @@ private:
 	void injectActiveProfileMemento(
 		std::shared_ptr<ContentMemento> memento);
 	void checkBeforeClose(Fn<void()> close);
+	void checkBeforeCloseByEscape(Fn<void()> close);
 	void restoreHistoryStack(
 		std::vector<std::shared_ptr<ContentMemento>> stack);
 	bool hasStackHistory() const {
@@ -170,11 +176,14 @@ private:
 		not_null<ContentMemento*> memento,
 		const Window::SectionShow &params);
 	void setupTop();
+	void setupTopBarMenuToggle();
 	void createTopBar();
 	void highlightTopBar();
 	void setupShortcuts();
 
 	[[nodiscard]] bool hasBackButton() const;
+	[[nodiscard]] bool willHaveBackButton(
+		const Window::SectionShow &params) const;
 
 	not_null<RpWidget*> topWidget() const;
 
@@ -198,12 +207,14 @@ private:
 	void addTopBarMenuButton();
 	void addProfileCallsButton();
 	void showTopBarMenu(bool check);
-	void deleteAllDownloads();
+
+	const bool _isSeparatedWindow = false;
 
 	rpl::variable<Wrap> _wrap;
 	std::unique_ptr<Controller> _controller;
 	object_ptr<ContentWidget> _content = { nullptr };
 	int _additionalScroll = 0;
+	int _maxVisibleHeight = 0;
 	bool _expanding = false;
 	rpl::variable<bool> _grabbingForExpanding = false;
 	object_ptr<TopBar> _topBar = { nullptr };

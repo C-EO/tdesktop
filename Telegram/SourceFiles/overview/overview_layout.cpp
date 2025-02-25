@@ -8,26 +8,19 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "overview/overview_layout.h"
 
 #include "overview/overview_layout_delegate.h"
+#include "core/ui_integration.h" // Core::MarkedTextContext.
 #include "data/data_document.h"
 #include "data/data_document_resolver.h"
 #include "data/data_session.h"
 #include "data/data_web_page.h"
-#include "data/data_media_types.h"
 #include "data/data_peer.h"
-#include "data/data_file_origin.h"
 #include "data/data_photo_media.h"
 #include "data/data_document_media.h"
 #include "data/data_file_click_handler.h"
-#include "styles/style_overview.h"
-#include "styles/style_chat.h"
-#include "core/file_utilities.h"
-#include "boxes/add_contact_box.h"
 #include "ui/boxes/confirm_box.h"
 #include "lang/lang_keys.h"
 #include "layout/layout_selection.h"
-#include "mainwidget.h"
 #include "storage/file_upload.h"
-#include "mainwindow.h"
 #include "main/main_session.h"
 #include "media/audio/media_audio.h"
 #include "media/player/media_player_instance.h"
@@ -50,6 +43,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/painter.h"
 #include "ui/power_saving.h"
 #include "ui/ui_utility.h"
+#include "styles/style_chat.h"
+#include "styles/style_chat_helpers.h"
+#include "styles/style_overview.h"
 
 namespace Overview {
 namespace Layout {
@@ -65,12 +61,42 @@ TextParseOptions _documentNameOptions = {
 };
 
 constexpr auto kMaxInlineArea = 1280 * 720;
+constexpr auto kStoryRatio = 1.46;
 
 [[nodiscard]] bool CanPlayInline(not_null<DocumentData*> document) {
 	const auto dimensions = document->dimensions;
 	return dimensions.width() * dimensions.height() <= kMaxInlineArea;
 }
 
+[[nodiscard]] QImage CropMediaFrame(QImage image, int width, int height) {
+	const auto ratio = style::DevicePixelRatio();
+	width *= ratio;
+	height *= ratio;
+	const auto finalize = [&](QImage result) {
+		result = result.scaled(
+			width,
+			height,
+			Qt::IgnoreAspectRatio,
+			Qt::SmoothTransformation);
+		result.setDevicePixelRatio(ratio);
+		return result;
+	};
+	if (image.width() * height == image.height() * width) {
+		if (image.width() != width) {
+			return finalize(std::move(image));
+		}
+		image.setDevicePixelRatio(ratio);
+		return image;
+	} else if (image.width() * height > image.height() * width) {
+		const auto use = (image.height() * width) / height;
+		const auto skip = (image.width() - use) / 2;
+		return finalize(image.copy(skip, 0, use, image.height()));
+	} else {
+		const auto use = (image.width() * height) / width;
+		const auto skip = (image.height() - use) / 2;
+		return finalize(image.copy(0, skip, image.width(), use));
+	}
+}
 
 } // namespace
 
@@ -298,7 +324,7 @@ Photo::Photo(
 	not_null<Delegate*> delegate,
 	not_null<HistoryItem*> parent,
 	not_null<PhotoData*> photo,
-	bool spoiler)
+	MediaOptions options)
 : ItemBase(delegate, parent)
 , _data(photo)
 , _link(std::make_shared<PhotoOpenClickHandler>(
@@ -308,9 +334,11 @@ Photo::Photo(
 		delegate->openPhoto(photo, id);
 	}),
 	parent->fullId()))
-, _spoiler(spoiler ? std::make_unique<Ui::SpoilerAnimation>([=] {
+, _spoiler(options.spoiler ? std::make_unique<Ui::SpoilerAnimation>([=] {
 	delegate->repaintItem(this);
-}) : nullptr) {
+}) : nullptr)
+, _pinned(options.pinned)
+, _story(options.story) {
 	if (_data->inlineThumbnailBytes().isEmpty()
 		&& (_data->hasExact(Data::PhotoSize::Small)
 			|| _data->hasExact(Data::PhotoSize::Thumbnail))) {
@@ -318,23 +346,26 @@ Photo::Photo(
 	}
 }
 
+Photo::~Photo() = default;
+
 void Photo::initDimensions() {
 	_maxw = 2 * st::overviewPhotoMinSize;
-	_minh = _maxw;
+	_minh = _story ? qRound(_maxw * kStoryRatio) : _maxw;
 }
 
 int32 Photo::resizeGetHeight(int32 width) {
 	width = qMin(width, _maxw);
-	if (width != _width || width != _height) {
-		_width = qMin(width, _maxw);
-		_height = _width;
+	if (_width != width) {
+		_width = width;
+		_height = _story ? qRound(_width * kStoryRatio) : _width;
 	}
 	return _height;
 }
 
 void Photo::paint(Painter &p, const QRect &clip, TextSelection selection, const PaintContext *context) {
 	const auto selected = (selection == FullSelection);
-	const auto widthChanged = _pix.width() != _width * cIntRetinaFactor();
+	const auto widthChanged = (_pix.width()
+		!= (_width * style::DevicePixelRatio()));
 	if (!_goodLoaded || widthChanged) {
 		ensureDataMediaCreated();
 		const auto good = !_spoiler
@@ -375,6 +406,14 @@ void Photo::paint(Painter &p, const QRect &clip, TextSelection selection, const 
 	if (selected) {
 		p.fillRect(0, 0, _width, _height, st::overviewPhotoSelectOverlay);
 	}
+
+	if (_pinned) {
+		const auto &icon = selected
+			? st::storyPinnedIconSelected
+			: st::storyPinnedIcon;
+		icon.paint(p, _width - icon.width(), 0, _width);
+	}
+
 	const auto checkDelta = st::overviewCheckSkip + st::overviewCheck.size;
 	const auto checkLeft = _width - checkDelta;
 	const auto checkTop = _height - checkDelta;
@@ -382,21 +421,14 @@ void Photo::paint(Painter &p, const QRect &clip, TextSelection selection, const 
 }
 
 void Photo::setPixFrom(not_null<Image*> image) {
-	const auto size = _width * cIntRetinaFactor();
+	Expects(_width > 0 && _height > 0);
+
 	auto img = image->original();
 	if (!_goodLoaded) {
 		img = Images::Blur(std::move(img));
 	}
-	if (img.width() == img.height()) {
-		if (img.width() != size) {
-			img = img.scaled(size, size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-		}
-	} else if (img.width() > img.height()) {
-		img = img.copy((img.width() - img.height()) / 2, 0, img.height(), img.height()).scaled(size, size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-	} else {
-		img = img.copy(0, (img.height() - img.width()) / 2, img.width(), img.width()).scaled(size, size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-	}
-	img.setDevicePixelRatio(cRetinaFactor());
+	_pix = Ui::PixmapFromImage(
+		CropMediaFrame(std::move(img), _width, _height));
 
 	// In case we have inline thumbnail we can unload all images and we still
 	// won't get a blank image in the media viewer when the photo is opened.
@@ -404,8 +436,6 @@ void Photo::setPixFrom(not_null<Image*> image) {
 		_dataMedia = nullptr;
 		delegate()->unregisterHeavyItem(this);
 	}
-
-	_pix = Ui::PixmapFromImage(std::move(img));
 }
 
 void Photo::ensureDataMediaCreated() const {
@@ -428,6 +458,14 @@ void Photo::clearSpoiler() {
 	}
 }
 
+void Photo::itemDataChanged() {
+	const auto pinned = parent()->isPinned();
+	if (_pinned != pinned) {
+		_pinned = pinned;
+		delegate()->repaintItem(this);
+	}
+}
+
 void Photo::clearHeavyPart() {
 	_dataMedia = nullptr;
 }
@@ -445,27 +483,39 @@ Video::Video(
 	not_null<Delegate*> delegate,
 	not_null<HistoryItem*> parent,
 	not_null<DocumentData*> video,
-	bool spoiler)
+	MediaOptions options)
 : RadialProgressItem(delegate, parent)
 , _data(video)
-, _duration(Ui::FormatDurationText(_data->getDuration()))
-, _spoiler(spoiler ? std::make_unique<Ui::SpoilerAnimation>([=] {
+, _videoCover(LookupVideoCover(video, parent))
+, _duration(Ui::FormatDurationText(_data->duration() / 1000))
+, _spoiler(options.spoiler ? std::make_unique<Ui::SpoilerAnimation>([=] {
 	delegate->repaintItem(this);
-}) : nullptr) {
+}) : nullptr)
+, _pinned(options.pinned)
+, _story(options.story) {
 	setDocumentLinks(_data);
-	_data->loadThumbnail(parent->fullId());
+	if (!_videoCover) {
+		_data->loadThumbnail(parent->fullId());
+	} else if (_videoCover->inlineThumbnailBytes().isEmpty()
+		&& (_videoCover->hasExact(Data::PhotoSize::Small)
+			|| _videoCover->hasExact(Data::PhotoSize::Thumbnail))) {
+		_videoCover->load(Data::PhotoSize::Small, parent->fullId());
+	}
 }
 
 Video::~Video() = default;
 
 void Video::initDimensions() {
 	_maxw = 2 * st::overviewPhotoMinSize;
-	_minh = _maxw;
+	_minh = _story ? qRound(_maxw * kStoryRatio) : _maxw;
 }
 
 int32 Video::resizeGetHeight(int32 width) {
-	_width = qMin(width, _maxw);
-	_height = _width;
+	width = qMin(width, _maxw);
+	if (_width != width) {
+		_width = width;
+		_height = _story ? qRound(_width * kStoryRatio) : _width;
+	}
 	return _height;
 }
 
@@ -473,9 +523,19 @@ void Video::paint(Painter &p, const QRect &clip, TextSelection selection, const 
 	ensureDataMediaCreated();
 
 	const auto selected = (selection == FullSelection);
-	const auto blurred = _dataMedia->thumbnailInline();
-	const auto thumbnail = _spoiler ? nullptr : _dataMedia->thumbnail();
-	const auto good = _spoiler ? nullptr : _dataMedia->goodThumbnail();
+	const auto blurred = _videoCover
+		? _videoCoverMedia->thumbnailInline()
+		: _dataMedia->thumbnailInline();
+	const auto thumbnail = _spoiler
+		? nullptr
+		: _videoCover
+		? _videoCoverMedia->image(Data::PhotoSize::Small)
+		: _dataMedia->thumbnail();
+	const auto good = _spoiler
+		? nullptr
+		: _videoCover
+		? _videoCoverMedia->image(Data::PhotoSize::Large)
+		: _dataMedia->goodThumbnail();
 
 	bool loaded = dataLoaded(), displayLoading = _data->displayLoading();
 	if (displayLoading) {
@@ -489,26 +549,15 @@ void Video::paint(Painter &p, const QRect &clip, TextSelection selection, const 
 	const auto radialOpacity = radial ? _radial->opacity() : 0.;
 
 	if ((blurred || thumbnail || good)
-		&& ((_pix.width() != _width * cIntRetinaFactor())
+		&& ((_pix.width() != _width * style::DevicePixelRatio())
 			|| (_pixBlurred && (thumbnail || good)))) {
-		auto size = _width * cIntRetinaFactor();
 		auto img = good
 			? good->original()
 			: thumbnail
 			? thumbnail->original()
 			: Images::Blur(blurred->original());
-		if (img.width() == img.height()) {
-			if (img.width() != size) {
-				img = img.scaled(size, size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-			}
-		} else if (img.width() > img.height()) {
-			img = img.copy((img.width() - img.height()) / 2, 0, img.height(), img.height()).scaled(size, size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-		} else {
-			img = img.copy(0, (img.height() - img.width()) / 2, img.width(), img.width()).scaled(size, size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-		}
-		img.setDevicePixelRatio(cRetinaFactor());
-
-		_pix = Ui::PixmapFromImage(std::move(img));
+		_pix = Ui::PixmapFromImage(
+			CropMediaFrame(std::move(img), _width, _height));
 		_pixBlurred = !(thumbnail || good);
 	}
 
@@ -529,6 +578,13 @@ void Video::paint(Painter &p, const QRect &clip, TextSelection selection, const 
 
 	if (selected) {
 		p.fillRect(QRect(0, 0, _width, _height), st::overviewPhotoSelectOverlay);
+	}
+
+	if (_pinned) {
+		const auto &icon = selected
+			? st::storyPinnedIconSelected
+			: st::storyPinnedIcon;
+		icon.paint(p, _width - icon.width(), 0, _width);
 	}
 
 	if (!selected && !context->selecting && radialOpacity < 1.) {
@@ -587,12 +643,17 @@ void Video::paint(Painter &p, const QRect &clip, TextSelection selection, const 
 }
 
 void Video::ensureDataMediaCreated() const {
-	if (_dataMedia) {
+	if (_dataMedia && (!_videoCover || _videoCoverMedia)) {
 		return;
 	}
 	_dataMedia = _data->createMediaView();
-	_dataMedia->goodThumbnailWanted();
-	_dataMedia->thumbnailWanted(parent()->fullId());
+	if (_videoCover) {
+		_videoCoverMedia = _videoCover->createMediaView();
+		_videoCover->load(Data::PhotoSize::Large, parent()->fullId());
+	} else {
+		_dataMedia->goodThumbnailWanted();
+		_dataMedia->thumbnailWanted(parent()->fullId());
+	}
 	delegate()->registerHeavyItem(this);
 }
 
@@ -600,6 +661,14 @@ void Video::clearSpoiler() {
 	if (_spoiler) {
 		_spoiler = nullptr;
 		_pix = QPixmap();
+		delegate()->repaintItem(this);
+	}
+}
+
+void Video::itemDataChanged() {
+	const auto pinned = parent()->isPinned();
+	if (_pinned != pinned) {
+		_pinned = pinned;
 		delegate()->repaintItem(this);
 	}
 }
@@ -685,7 +754,7 @@ Voice::Voice(
 
 	updateName();
 	const auto dateText = Ui::Text::Link(
-		langDateTime(base::unixtime::parse(_data->date))); // Link 1.
+		langDateTime(base::unixtime::parse(parent->date()))); // Link 1.
 	_details.setMarkedText(
 		st::defaultTextStyle,
 		tr::lng_date_and_duration(
@@ -693,7 +762,7 @@ Voice::Voice(
 			lt_date,
 			dateText,
 			lt_duration,
-			{ .text = Ui::FormatDurationText(duration()) },
+			{ .text = Ui::FormatDurationText(_data->duration() / 1000) },
 			Ui::Text::WithEntities));
 	_details.setLink(1, JumpToMessageClickHandler(parent));
 }
@@ -818,6 +887,7 @@ void Voice::paint(Painter &p, const QRect &clip, TextSelection selection, const 
 			p.drawTextLeft(nameleft, statustop, _width, _status.text(), statusw);
 			unreadx += statusw;
 		}
+		auto captionLeft = unreadx + st::mediaUnreadSkip;
 		if (parent()->hasUnreadMediaFlag() && unreadx + st::mediaUnreadSkip + st::mediaUnreadSize <= _width) {
 			p.setPen(Qt::NoPen);
 			p.setBrush(selected ? st::msgFileInBgSelected : st::msgFileInBg);
@@ -826,6 +896,22 @@ void Voice::paint(Painter &p, const QRect &clip, TextSelection selection, const 
 				PainterHighQualityEnabler hq(p);
 				p.drawEllipse(style::rtlrect(unreadx + st::mediaUnreadSkip, statustop + st::mediaUnreadTop, st::mediaUnreadSize, st::mediaUnreadSize, _width));
 			}
+			captionLeft += st::mediaUnreadSkip + st::mediaUnreadSize;
+		}
+		if (!_caption.isEmpty()) {
+			p.setPen(st::historyFileNameInFg);
+			const auto w = _width - captionLeft - st::defaultScrollArea.width;
+			_caption.draw(p, Ui::Text::PaintContext{
+				.position = QPoint(captionLeft, statustop),
+				.availableWidth = w,
+				.spoiler = Ui::Text::DefaultSpoilerCache(),
+				.paused = context
+					? context->paused
+					: On(PowerSaving::kEmojiChat),
+				.pausedEmoji = On(PowerSaving::kEmojiChat),
+				.pausedSpoiler = On(PowerSaving::kChatSpoiler),
+				.elisionLines = 1,
+			});
 		}
 	}
 
@@ -932,23 +1018,19 @@ const style::RoundCheckbox &Voice::checkboxStyle() const {
 
 void Voice::updateName() {
 	if (const auto forwarded = parent()->Get<HistoryMessageForwarded>()) {
-		if (parent()->fromOriginal()->isChannel()) {
-			_name.setText(
-				st::semiboldTextStyle,
-				tr::lng_forwarded_channel(
-					tr::now,
-					lt_channel,
-					parent()->fromOriginal()->name()),
-				Ui::NameTextOptions());
-		} else {
-			_name.setText(
-				st::semiboldTextStyle,
-				tr::lng_forwarded(
-					tr::now,
-					lt_user,
-					parent()->fromOriginal()->name()),
-				Ui::NameTextOptions());
-		}
+		const auto info = parent()->originalHiddenSenderInfo();
+		const auto name = info
+			? tr::lng_forwarded(tr::now, lt_user, info->nameText().toString())
+			: parent()->fromOriginal()->isChannel()
+			? tr::lng_forwarded_channel(
+				tr::now,
+				lt_channel,
+				parent()->fromOriginal()->name())
+			: tr::lng_forwarded(
+				tr::now,
+				lt_user,
+				parent()->fromOriginal()->name());
+		_name.setText(st::semiboldTextStyle, name, Ui::NameTextOptions());
 	} else {
 		_name.setText(
 			st::semiboldTextStyle,
@@ -956,10 +1038,14 @@ void Voice::updateName() {
 			Ui::NameTextOptions());
 	}
 	_nameVersion = parent()->fromOriginal()->nameVersion();
-}
-
-int Voice::duration() const {
-	return std::max(_data->getDuration(), 0);
+	_caption.setMarkedText(
+		st::defaultTextStyle,
+		parent()->originalText(),
+		Ui::DialogTextOptions(),
+		Core::MarkedTextContext{
+			.session = &parent()->history()->session(),
+			.customEmojiRepaint = [=] { delegate()->repaintItem(this); },
+		});
 }
 
 bool Voice::updateStatusText() {
@@ -983,7 +1069,7 @@ bool Voice::updateStatusText() {
 	}
 
 	if (statusSize != _status.size()) {
-		_status.update(statusSize, _data->size, duration(), realDuration);
+		_status.update(statusSize, _data->size, _data->duration() / 1000, realDuration);
 	}
 	return showPause;
 }
@@ -1009,7 +1095,7 @@ Document::Document(
 , _forceFileLayout(fields.forceFileLayout)
 , _date(langDateTime(base::unixtime::parse(fields.dateOverride
 	? fields.dateOverride
-	: _data->date)))
+	: parent->date())))
 , _ext(_generic.ext)
 , _datew(st::normalFont->width(_date)) {
 	_name.setMarkedText(
@@ -1026,7 +1112,7 @@ Document::Document(
 	_status.update(
 		Ui::FileStatusSizeReady,
 		_data->size,
-		songLayout() ? _data->song()->duration : -1,
+		songLayout() ? (_data->duration() / 1000) : -1,
 		0);
 
 	if (withThumb()) {
@@ -1334,7 +1420,9 @@ void Document::drawCornerDownload(QPainter &p, bool selected, const PaintContext
 	icon->paintInCenter(p, inner);
 	if (_radial && _radial->animating()) {
 		const auto rinner = inner.marginsRemoved(QMargins(st::historyAudioRadialLine, st::historyAudioRadialLine, st::historyAudioRadialLine, st::historyAudioRadialLine));
-		auto fg = selected ? st::historyFileThumbRadialFgSelected : st::historyFileThumbRadialFg;
+		const auto &fg = selected
+			? st::historyFileInIconFgSelected
+			: st::historyFileInIconFg;
 		_radial->draw(p, rinner, st::historyAudioRadialLine, fg);
 	}
 }
@@ -1502,9 +1590,7 @@ bool Document::iconAnimated() const {
 }
 
 bool Document::withThumb() const {
-	return !songLayout()
-		&& _data->hasThumbnail()
-		&& !Data::IsExecutableName(_data->filename());
+	return !songLayout() && _data->hasThumbnail();
 }
 
 bool Document::updateStatusText() {
@@ -1541,7 +1627,7 @@ bool Document::updateStatusText() {
 		_status.update(
 			statusSize,
 			_data->size,
-			isSong ? _data->song()->duration : -1,
+			isSong ? (_data->duration() / 1000) : -1,
 			realDuration);
 	}
 	return showPause;
@@ -1573,6 +1659,17 @@ Link::Link(
 			mainUrl = url;
 		}
 		_links.push_back(LinkEntry(url, entityText));
+	}
+	if (_links.empty()) {
+		if (const auto media = parent->media()) {
+			if (const auto webpage = media->webpage()) {
+				if (!webpage->displayUrl.isEmpty()
+					&& !webpage->url.isEmpty()) {
+					_links.push_back(
+						LinkEntry(webpage->displayUrl, webpage->url));
+				}
+			}
+		}
 	}
 	while (lnk > 0 && till > from) {
 		--lnk;
@@ -1682,7 +1779,7 @@ Link::Link(
 			domain = parts.at(2);
 		}
 
-		parts = domain.split('@').back().split('.', Qt::SkipEmptyParts);
+		parts = domain.split('@').constLast().split('.', Qt::SkipEmptyParts);
 		if (parts.size() > 1) {
 			_letter = parts.at(parts.size() - 2).at(0).toUpper();
 			if (_title.isEmpty()) {
@@ -1836,7 +1933,7 @@ void Link::validateThumbnail() {
 		delegate()->unregisterHeavyItem(this);
 	} else {
 		const auto size = QSize(st::linksPhotoSize, st::linksPhotoSize);
-		_thumbnail = QPixmap(size * cIntRetinaFactor());
+		_thumbnail = QPixmap(size * style::DevicePixelRatio());
 		_thumbnail.fill(Qt::transparent);
 		auto p = Painter(&_thumbnail);
 		const auto index = _letter.isEmpty()
@@ -2050,7 +2147,7 @@ void Gif::validateThumbnail(
 		bool good) {
 	if (!image || (_thumbGood && !good)) {
 		return;
-	} else if ((_thumb.size() == size * cIntRetinaFactor())
+	} else if ((_thumb.size() == size * style::DevicePixelRatio())
 		&& (_thumbGood || !good)) {
 		return;
 	}

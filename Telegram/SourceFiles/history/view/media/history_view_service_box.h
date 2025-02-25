@@ -13,22 +13,38 @@ namespace Ui {
 class RippleAnimation;
 } // namespace Ui
 
+namespace Ui::Premium {
+class ColoredMiniStars;
+} // namespace Ui::Premium
+
 namespace HistoryView {
 
 class ServiceBoxContent {
 public:
 	virtual ~ServiceBoxContent() = default;
 
+	[[nodiscard]] virtual int width();
 	[[nodiscard]] virtual int top() = 0;
 	[[nodiscard]] virtual QSize size() = 0;
-	[[nodiscard]] virtual QString title() = 0;
-	[[nodiscard]] virtual QString subtitle() = 0;
-	[[nodiscard]] virtual QString button() = 0;
+	[[nodiscard]] virtual TextWithEntities title() = 0;
+	[[nodiscard]] virtual TextWithEntities subtitle() = 0;
+	[[nodiscard]] virtual int buttonSkip() {
+		return top();
+	}
+	[[nodiscard]] virtual rpl::producer<QString> button() = 0;
+	[[nodiscard]] virtual bool buttonMinistars() {
+		return false;
+	}
+	[[nodiscard]] virtual QImage cornerTag(const PaintContext &context) {
+		return {};
+	}
 	virtual void draw(
 		Painter &p,
 		const PaintContext &context,
 		const QRect &geometry) = 0;
 	[[nodiscard]] virtual ClickHandlerPtr createViewLink() = 0;
+
+	[[nodiscard]] virtual bool hideServiceText() = 0;
 
 	virtual void stickerClearLoopPlayed() = 0;
 	[[nodiscard]] virtual std::unique_ptr<StickerPlayer> stickerTakePlayer(
@@ -69,6 +85,11 @@ public:
 	[[nodiscard]] bool needsBubble() const override;
 	[[nodiscard]] bool customInfoLayout() const override;
 
+	[[nodiscard]] bool hideServiceText() const override {
+		return _content->hideServiceText();
+	}
+	void hideSpoilers() override;
+
 	bool hasHeavyPart() const override;
 	void unloadHeavyPart() override;
 
@@ -78,10 +99,12 @@ private:
 
 	const not_null<Element*> _parent;
 	const std::unique_ptr<ServiceBoxContent> _content;
+	mutable ClickHandlerPtr _contentLink;
 
 	struct Button {
 		void drawBg(QPainter &p) const;
 		void toggleRipple(bool pressed);
+		[[nodiscard]] bool empty() const;
 
 		Fn<void()> repaint;
 
@@ -90,6 +113,8 @@ private:
 
 		ClickHandlerPtr link;
 		std::unique_ptr<Ui::RippleAnimation> ripple;
+		std::unique_ptr<Ui::Premium::ColoredMiniStars> stars;
+		std::unique_ptr<QColor> lastFg;
 
 		mutable QPoint lastPoint;
 	} _button;
@@ -99,6 +124,7 @@ private:
 	Ui::Text::String _subtitle;
 	const QSize _size;
 	const QSize _innerSize;
+	rpl::lifetime _lifetime;
 
 };
 

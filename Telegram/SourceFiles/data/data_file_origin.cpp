@@ -40,10 +40,8 @@ struct FileReferenceAccumulator {
 		});
 	}
 	void push(const MTPPage &data) {
-		data.match([&](const auto &data) {
-			push(data.vphotos());
-			push(data.vdocuments());
-		});
+		push(data.data().vphotos());
+		push(data.data().vdocuments());
 	}
 	void push(const MTPWallPaper &data) {
 		data.match([&](const MTPDwallPaper &data) {
@@ -52,13 +50,33 @@ struct FileReferenceAccumulator {
 		});
 	}
 	void push(const MTPTheme &data) {
-		data.match([&](const MTPDtheme &data) {
-			push(data.vdocument());
-		});
+		push(data.data().vdocument());
 	}
 	void push(const MTPWebPageAttribute &data) {
-		data.match([&](const MTPDwebPageAttributeTheme &data) {
+		data.match([&](const MTPDwebPageAttributeStory &data) {
+			push(data.vstory());
+		}, [&](const MTPDwebPageAttributeTheme &data) {
 			push(data.vdocuments());
+		}, [&](const MTPDwebPageAttributeStickerSet &data) {
+			push(data.vstickers());
+		}, [&](const MTPDwebPageAttributeUniqueStarGift &data) {
+			push(data.vgift());
+		});
+	}
+	void push(const MTPStarGift &data) {
+		data.match([&](const MTPDstarGift &data) {
+			push(data.vsticker());
+		}, [&](const MTPDstarGiftUnique &data) {
+			push(data.vattributes());
+		});
+	}
+	void push(const MTPStarGiftAttribute &data) {
+		data.match([&](const MTPDstarGiftAttributeModel &data) {
+			push(data.vdocument());
+		}, [&](const MTPDstarGiftAttributePattern &data) {
+			push(data.vdocument());
+		}, [&](const MTPDstarGiftAttributeBackdrop &data) {
+		}, [&](const MTPDstarGiftAttributeOriginalDetails &data) {
 		});
 	}
 	void push(const MTPWebPage &data) {
@@ -76,30 +94,59 @@ struct FileReferenceAccumulator {
 		}, [](const auto &data) {
 		});
 	}
+	void push(const MTPMessageExtendedMedia &data) {
+		data.match([&](const MTPDmessageExtendedMediaPreview &data) {
+		}, [&](const MTPDmessageExtendedMedia &data) {
+			push(data.vmedia());
+		});
+	}
 	void push(const MTPMessageMedia &data) {
 		data.match([&](const MTPDmessageMediaPhoto &data) {
 			push(data.vphoto());
 		}, [&](const MTPDmessageMediaDocument &data) {
 			push(data.vdocument());
+			push(data.vvideo_cover());
+			push(data.valt_documents());
 		}, [&](const MTPDmessageMediaWebPage &data) {
 			push(data.vwebpage());
 		}, [&](const MTPDmessageMediaGame &data) {
 			push(data.vgame());
+		}, [&](const MTPDmessageMediaInvoice &data) {
+			push(data.vextended_media());
+		}, [&](const MTPDmessageMediaPaidMedia &data) {
+			push(data.vextended_media());
 		}, [](const auto &data) {
+		});
+	}
+	void push(const MTPMessageReplyHeader &data) {
+		data.match([&](const MTPDmessageReplyHeader &data) {
+			push(data.vreply_media());
+		}, [](const MTPDmessageReplyStoryHeader &data) {
 		});
 	}
 	void push(const MTPMessage &data) {
 		data.match([&](const MTPDmessage &data) {
 			push(data.vmedia());
+			push(data.vreply_to());
 		}, [&](const MTPDmessageService &data) {
 			data.vaction().match(
 			[&](const MTPDmessageActionChatEditPhoto &data) {
 				push(data.vphoto());
 			}, [&](const MTPDmessageActionSuggestProfilePhoto &data) {
 				push(data.vphoto());
+			}, [&](const MTPDmessageActionSetChatWallPaper &data) {
+				push(data.vwallpaper());
 			}, [](const auto &data) {
 			});
+			push(data.vreply_to());
 		}, [](const MTPDmessageEmpty &data) {
+		});
+	}
+	void push(const MTPStoryItem &data) {
+		data.match([&](const MTPDstoryItem &data) {
+			push(data.vmedia());
+		}, [](const MTPDstoryItemDeleted &) {
+		}, [](const MTPDstoryItemSkipped &) {
 		});
 	}
 	void push(const MTPmessages_Messages &data) {
@@ -114,9 +161,7 @@ struct FileReferenceAccumulator {
 		});
 	}
 	void push(const MTPusers_UserFull &data) {
-		data.match([&](const auto &data) {
-			push(data.vfull_user().data().vpersonal_photo());
-		});
+		push(data.data().vfull_user().data().vpersonal_photo());
 	}
 	void push(const MTPmessages_RecentStickers &data) {
 		data.match([&](const MTPDmessages_recentStickers &data) {
@@ -149,9 +194,13 @@ struct FileReferenceAccumulator {
 		});
 	}
 	void push(const MTPhelp_PremiumPromo &data) {
-		data.match([&](const MTPDhelp_premiumPromo &data) {
-			push(data.vvideos());
-		});
+		push(data.data().vvideos());
+	}
+	void push(const MTPmessages_WebPage &data) {
+		push(data.data().vwebpage());
+	}
+	void push(const MTPstories_Stories &data) {
+		push(data.data().vstories());
 	}
 
 	UpdatedFileReferences result;
@@ -211,6 +260,14 @@ UpdatedFileReferences GetFileReferences(
 }
 
 UpdatedFileReferences GetFileReferences(const MTPhelp_PremiumPromo &data) {
+	return GetFileReferencesHelper(data);
+}
+
+UpdatedFileReferences GetFileReferences(const MTPmessages_WebPage &data) {
+	return GetFileReferencesHelper(data);
+}
+
+UpdatedFileReferences GetFileReferences(const MTPstories_Stories &data) {
 	return GetFileReferencesHelper(data);
 }
 

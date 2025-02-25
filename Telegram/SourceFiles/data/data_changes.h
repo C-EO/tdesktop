@@ -38,6 +38,7 @@ inline constexpr int CountBit(Flag Last = Flag::LastUsedBit) {
 namespace Data {
 
 class ForumTopic;
+class Story;
 
 struct NameUpdate {
 	NameUpdate(
@@ -64,45 +65,56 @@ struct PeerUpdate {
 		Migration           = (1ULL << 5),
 		UnavailableReason   = (1ULL << 6),
 		ChatThemeEmoji      = (1ULL << 7),
-		IsBlocked           = (1ULL << 8),
-		MessagesTTL         = (1ULL << 9),
-		FullInfo            = (1ULL << 10),
-		Usernames           = (1ULL << 11),
-		TranslationDisabled = (1ULL << 12),
+		ChatWallPaper       = (1ULL << 8),
+		IsBlocked           = (1ULL << 9),
+		MessagesTTL         = (1ULL << 10),
+		FullInfo            = (1ULL << 11),
+		Usernames           = (1ULL << 12),
+		TranslationDisabled = (1ULL << 13),
+		Color               = (1ULL << 14),
+		BackgroundEmoji     = (1ULL << 15),
+		StoriesState        = (1ULL << 16),
+		VerifyInfo          = (1ULL << 17),
 
 		// For users
-		CanShareContact     = (1ULL << 13),
-		IsContact           = (1ULL << 14),
-		PhoneNumber         = (1ULL << 15),
-		OnlineStatus        = (1ULL << 16),
-		BotCommands         = (1ULL << 17),
-		BotCanBeInvited     = (1ULL << 18),
-		BotStartToken       = (1ULL << 19),
-		CommonChats         = (1ULL << 20),
-		HasCalls            = (1ULL << 21),
-		SupportInfo         = (1ULL << 22),
-		IsBot               = (1ULL << 23),
-		EmojiStatus         = (1ULL << 24),
+		CanShareContact     = (1ULL << 18),
+		IsContact           = (1ULL << 19),
+		PhoneNumber         = (1ULL << 20),
+		OnlineStatus        = (1ULL << 21),
+		BotCommands         = (1ULL << 22),
+		BotCanBeInvited     = (1ULL << 23),
+		BotStartToken       = (1ULL << 24),
+		CommonChats         = (1ULL << 25),
+		PeerGifts           = (1ULL << 26),
+		HasCalls            = (1ULL << 27),
+		SupportInfo         = (1ULL << 28),
+		IsBot               = (1ULL << 29),
+		EmojiStatus         = (1ULL << 30),
+		BusinessDetails     = (1ULL << 31),
+		Birthday            = (1ULL << 32),
+		PersonalChannel     = (1ULL << 33),
+		StarRefProgram      = (1ULL << 34),
 
 		// For chats and channels
-		InviteLinks         = (1ULL << 25),
-		Members             = (1ULL << 26),
-		Admins              = (1ULL << 27),
-		BannedUsers         = (1ULL << 28),
-		Rights              = (1ULL << 29),
-		PendingRequests     = (1ULL << 30),
-		Reactions           = (1ULL << 31),
+		InviteLinks         = (1ULL << 35),
+		Members             = (1ULL << 36),
+		Admins              = (1ULL << 37),
+		BannedUsers         = (1ULL << 38),
+		Rights              = (1ULL << 39),
+		PendingRequests     = (1ULL << 40),
+		Reactions           = (1ULL << 41),
 
 		// For channels
-		ChannelAmIn         = (1ULL << 32),
-		StickersSet         = (1ULL << 33),
-		ChannelLinkedChat   = (1ULL << 34),
-		ChannelLocation     = (1ULL << 35),
-		Slowmode            = (1ULL << 36),
-		GroupCall           = (1ULL << 37),
+		ChannelAmIn         = (1ULL << 42),
+		StickersSet         = (1ULL << 43),
+		EmojiSet            = (1ULL << 44),
+		ChannelLinkedChat   = (1ULL << 45),
+		ChannelLocation     = (1ULL << 46),
+		Slowmode            = (1ULL << 47),
+		GroupCall           = (1ULL << 48),
 
 		// For iteration
-		LastUsedBit         = (1ULL << 37),
+		LastUsedBit         = (1ULL << 48),
 	};
 	using Flags = base::flags<Flag>;
 	friend inline constexpr auto is_flag_type(Flag) { return true; }
@@ -146,19 +158,19 @@ struct TopicUpdate {
 	enum class Flag : uint32 {
 		None = 0,
 
-		UnreadView = (1U << 1),
-		UnreadMentions = (1U << 2),
+		UnreadView      = (1U << 1),
+		UnreadMentions  = (1U << 2),
 		UnreadReactions = (1U << 3),
-		Notifications = (1U << 4),
-		Title = (1U << 5),
-		IconId = (1U << 6),
-		ColorId = (1U << 7),
-		CloudDraft = (1U << 8),
-		Closed = (1U << 9),
-		Creator = (1U << 10),
-		Destroyed = (1U << 11),
+		Notifications   = (1U << 4),
+		Title           = (1U << 5),
+		IconId          = (1U << 6),
+		ColorId         = (1U << 7),
+		CloudDraft      = (1U << 8),
+		Closed          = (1U << 9),
+		Creator         = (1U << 10),
+		Destroyed       = (1U << 11),
 
-		LastUsedBit = (1U << 11),
+		LastUsedBit     = (1U << 11),
 	};
 	using Flags = base::flags<Flag>;
 	friend inline constexpr auto is_flag_type(Flag) { return true; }
@@ -197,19 +209,40 @@ struct EntryUpdate {
 	enum class Flag : uint32 {
 		None = 0,
 
-		Repaint = (1U << 0),
+		Repaint           = (1U << 0),
 		HasPinnedMessages = (1U << 1),
-		ForwardDraft = (1U << 2),
-		LocalDraftSet = (1U << 3),
-		Height = (1U << 4),
-		Destroyed = (1U << 5),
+		ForwardDraft      = (1U << 2),
+		LocalDraftSet     = (1U << 3),
+		Height            = (1U << 4),
+		Destroyed         = (1U << 5),
 
-		LastUsedBit = (1U << 5),
+		LastUsedBit       = (1U << 5),
 	};
 	using Flags = base::flags<Flag>;
 	friend inline constexpr auto is_flag_type(Flag) { return true; }
 
 	not_null<Dialogs::Entry*> entry;
+	Flags flags = 0;
+
+};
+
+struct StoryUpdate {
+	enum class Flag : uint32 {
+		None = 0,
+
+		Edited       = (1U << 0),
+		Destroyed    = (1U << 1),
+		NewAdded     = (1U << 2),
+		ViewsChanged = (1U << 3),
+		MarkRead     = (1U << 4),
+		Reaction     = (1U << 5),
+
+		LastUsedBit  = (1U << 5),
+	};
+	using Flags = base::flags<Flag>;
+	friend inline constexpr auto is_flag_type(Flag) { return true; }
+
+	not_null<Story*> story;
 	Flags flags = 0;
 
 };
@@ -297,6 +330,20 @@ public:
 		EntryUpdate::Flag flag) const;
 	void entryRemoved(not_null<Dialogs::Entry*> entry);
 
+	void storyUpdated(
+		not_null<Story*> story,
+		StoryUpdate::Flags flags);
+	[[nodiscard]] rpl::producer<StoryUpdate> storyUpdates(
+		StoryUpdate::Flags flags) const;
+	[[nodiscard]] rpl::producer<StoryUpdate> storyUpdates(
+		not_null<Story*> story,
+		StoryUpdate::Flags flags) const;
+	[[nodiscard]] rpl::producer<StoryUpdate> storyFlagsValue(
+		not_null<Story*> story,
+		StoryUpdate::Flags flags) const;
+	[[nodiscard]] rpl::producer<StoryUpdate> realtimeStoryUpdates(
+		StoryUpdate::Flag flag) const;
+
 	void sendNotifications();
 
 private:
@@ -347,6 +394,7 @@ private:
 	Manager<ForumTopic, TopicUpdate> _topicChanges;
 	Manager<HistoryItem, MessageUpdate> _messageChanges;
 	Manager<Dialogs::Entry, EntryUpdate> _entryChanges;
+	Manager<Story, StoryUpdate> _storyChanges;
 
 	bool _notify = false;
 

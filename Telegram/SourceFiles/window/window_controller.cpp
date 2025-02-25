@@ -19,19 +19,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session_settings.h"
 #include "main/main_app_config.h"
 #include "media/view/media_view_open_common.h"
+#include "lang/lang_keys.h"
 #include "intro/intro_widget.h"
 #include "mtproto/mtproto_config.h"
-#include "ui/layers/box_content.h"
-#include "ui/layers/layer_widget.h"
 #include "ui/toast/toast.h"
 #include "ui/emoji_config.h"
 #include "chat_helpers/emoji_sets_manager.h"
 #include "window/window_session_controller.h"
-#include "window/themes/window_theme.h"
 #include "window/themes/window_theme_editor.h"
 #include "ui/boxes/confirm_box.h"
-#include "data/data_peer.h"
-#include "mainwindow.h"
+#include "data/data_thread.h"
 #include "apiwrap.h" // ApiWrap::acceptTerms.
 #include "styles/style_layers.h"
 
@@ -39,24 +36,75 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtGui/QScreen>
 
 namespace Window {
+namespace {
 
-Controller::Controller() : Controller(CreateArgs{}) {
+class Show final : public Ui::Show {
+public:
+	explicit Show(not_null<Controller*> window);
+
+	void showOrHideBoxOrLayer(
+		std::variant<
+			v::null_t,
+			object_ptr<Ui::BoxContent>,
+			std::unique_ptr<Ui::LayerWidget>> &&layer,
+		Ui::LayerOptions options,
+		anim::type animated) const override;
+	[[nodiscard]] not_null<QWidget*> toastParent() const override;
+	[[nodiscard]] bool valid() const override;
+	operator bool() const override;
+
+private:
+	const base::weak_ptr<Controller> _window;
+
+};
+
+Show::Show(not_null<Controller*> window)
+: _window(base::make_weak(window)) {
 }
 
-Controller::Controller(not_null<Main::Account*> account)
-: Controller(CreateArgs{}) {
-	showAccount(account);
+void Show::showOrHideBoxOrLayer(
+		std::variant<
+			v::null_t,
+			object_ptr<Ui::BoxContent>,
+			std::unique_ptr<Ui::LayerWidget>> &&layer,
+		Ui::LayerOptions options,
+		anim::type animated) const {
+	if (const auto window = _window.get()) {
+		window->widget()->showOrHideBoxOrLayer(
+			std::move(layer),
+			options,
+			animated);
+	}
 }
 
-Controller::Controller(
-	not_null<PeerData*> singlePeer,
-	MsgId showAtMsgId)
-: Controller(CreateArgs{ singlePeer.get() }) {
-	showAccount(&singlePeer->account(), showAtMsgId);
+not_null<QWidget*> Show::toastParent() const {
+	const auto window = _window.get();
+	Assert(window != nullptr);
+	return window->widget()->bodyWidget();
+}
+
+bool Show::valid() const {
+	return !_window.empty();
+}
+
+Show::operator bool() const {
+	return valid();
+}
+
+} // namespace
+
+Controller::Controller() : Controller(CreateArgs{ nullptr }) {
+}
+
+Controller::Controller(SeparateId id, MsgId showAtMsgId)
+: Controller(CreateArgs{ id }) {
+	if (id) {
+		showAccount(id.account, showAtMsgId);
+	}
 }
 
 Controller::Controller(CreateArgs &&args)
-: _singlePeer(args.singlePeer)
+: _id(args.id)
 , _isActiveTimer([=] { updateIsActive(); })
 , _widget(this)
 , _adaptive(std::make_unique<Adaptive>()) {
@@ -72,6 +120,20 @@ Controller::~Controller() {
 	_sessionController = nullptr;
 }
 
+SeparateId Controller::id() const {
+	return _id;
+}
+
+bool Controller::isPrimary() const {
+	return _id.primary();
+}
+
+Main::Account &Controller::account() const {
+	Expects(_id.account != nullptr);
+
+	return *_id.account;
+}
+
 void Controller::showAccount(not_null<Main::Account*> account) {
 	showAccount(account, ShowAtUnreadMsgId);
 }
@@ -79,20 +141,21 @@ void Controller::showAccount(not_null<Main::Account*> account) {
 void Controller::showAccount(
 		not_null<Main::Account*> account,
 		MsgId singlePeerShowAtMsgId) {
-	Expects(isPrimary() || &_singlePeer->account() == account);
+	Expects(isPrimary() || _id.account == account);
 
-	const auto prevSessionUniqueId = (_account && _account->sessionExists())
-		? _account->session().uniqueId()
+	const auto prevSession = maybeSession();
+	const auto prevSessionUniqueId = prevSession
+		? prevSession->uniqueId()
 		: 0;
 	_accountLifetime.destroy();
-	_account = account;
-	Core::App().checkWindowAccount(this);
+	_id.account = account;
+	Core::App().checkWindowId(this);
 
-	const auto updateOnlineOfPrevSesssion = crl::guard(_account, [=] {
+	const auto updateOnlineOfPrevSesssion = crl::guard(account, [=] {
 		if (!prevSessionUniqueId) {
 			return;
 		}
-		for (auto &[index, account] : _account->domain().accounts()) {
+		for (auto &[index, account] : _id.account->domain().accounts()) {
 			if (const auto anotherSession = account->maybeSession()) {
 				if (anotherSession->uniqueId() == prevSessionUniqueId) {
 					anotherSession->updates().updateOnline(crl::now());
@@ -102,12 +165,15 @@ void Controller::showAccount(
 		}
 	});
 
-	_account->sessionValue(
-	) | rpl::start_with_next([=](Main::Session *session) {
-		if (!isPrimary() && (&_singlePeer->session() != session)) {
+	if (!isPrimary()) {
+		_id.account->sessionChanges(
+		) | rpl::start_with_next([=](Main::Session *session) {
 			Core::App().closeWindow(this);
-			return;
-		}
+		}, _accountLifetime);
+	}
+
+	_id.account->sessionValue(
+	) | rpl::start_with_next([=](Main::Session *session) {
 		const auto was = base::take(_sessionController);
 		_sessionController = session
 			? std::make_unique<SessionController>(session, this)
@@ -152,10 +218,6 @@ void Controller::showAccount(
 	}, _accountLifetime);
 }
 
-PeerData *Controller::singlePeer() const {
-	return _singlePeer;
-}
-
 void Controller::setupSideBar() {
 	Expects(_sessionController != nullptr);
 
@@ -167,7 +229,9 @@ void Controller::setupSideBar() {
 		sideBarChanged();
 	}, _sessionController->lifetime());
 
-	if (_sessionController->session().settings().dialogsFiltersEnabled()) {
+	if (_sessionController->session().settings().dialogsFiltersEnabled()
+		&& _sessionController->enoughSpaceForFilters()
+		&& !Core::App().settings().chatFiltersHorizontal()) {
 		_sessionController->toggleFiltersMenu(true);
 	} else {
 		sideBarChanged();
@@ -220,13 +284,11 @@ void Controller::checkLockByTerms() {
 }
 
 void Controller::showTermsDecline() {
-	const auto box = show(
-		Box<Window::TermsBox>(
-			TextWithEntities{ tr::lng_terms_update_sorry(tr::now) },
-			tr::lng_terms_decline_and_delete(),
-			tr::lng_terms_back(),
-			true),
-		Ui::LayerOption::KeepOther);
+	const auto box = show(Box<Window::TermsBox>(
+		TextWithEntities{ tr::lng_terms_update_sorry(tr::now) },
+		tr::lng_terms_decline_and_delete(),
+		tr::lng_terms_back(),
+		true));
 
 	box->agreeClicks(
 	) | rpl::start_with_next([=] {
@@ -252,14 +314,16 @@ void Controller::showTermsDelete() {
 			hideLayer();
 		}
 	};
-	show(
-		Ui::MakeConfirmBox({
-			.text = tr::lng_terms_delete_warning(),
-			.confirmed = deleteByTerms,
-			.confirmText = tr::lng_terms_delete_now(),
-			.confirmStyle = &st::attentionBoxButton,
-		}),
-		Ui::LayerOption::KeepOther);
+	show(Ui::MakeConfirmBox({
+		.text = tr::lng_terms_delete_warning(),
+		.confirmed = deleteByTerms,
+		.confirmText = tr::lng_terms_delete_now(),
+		.confirmStyle = &st::attentionBoxButton,
+	}));
+}
+
+void Controller::firstShow() {
+	_widget.firstShow();
 }
 
 void Controller::finishFirstShow() {
@@ -268,7 +332,7 @@ void Controller::finishFirstShow() {
 }
 
 Main::Session *Controller::maybeSession() const {
-	return _account ? _account->maybeSession() : nullptr;
+	return _id.account ? _id.account->maybeSession() : nullptr;
 }
 
 auto Controller::sessionControllerValue() const
@@ -303,7 +367,7 @@ void Controller::setupPasscodeLock() {
 }
 
 void Controller::clearPasscodeLock() {
-	if (!_account) {
+	if (!_id) {
 		showAccount(&Core::App().activeAccount());
 	} else {
 		_widget.clearPasscodeLock();
@@ -341,22 +405,30 @@ int Controller::verticalShadowTop() const {
 		: 0;
 }
 
-void Controller::showToast(const QString &text) {
-	Ui::Toast::Show(_widget.bodyWidget(), text);
+void Controller::showToast(Ui::Toast::Config &&config) {
+	Show(this).showToast(std::move(config));
+}
+
+void Controller::showToast(TextWithEntities &&text, crl::time duration) {
+	Show(this).showToast(std::move(text), duration);
+}
+
+void Controller::showToast(const QString &text, crl::time duration) {
+	Show(this).showToast(text, duration);
 }
 
 void Controller::showLayer(
 		std::unique_ptr<Ui::LayerWidget> &&layer,
 		Ui::LayerOptions options,
 		anim::type animated) {
-	_widget.showLayer(std::move(layer), options, animated);
+	_widget.showOrHideBoxOrLayer(std::move(layer), options, animated);
 }
 
 void Controller::showBox(
 		object_ptr<Ui::BoxContent> content,
 		Ui::LayerOptions options,
 		anim::type animated) {
-	_widget.ui_showBox(std::move(content), options, animated);
+	_widget.showOrHideBoxOrLayer(std::move(content), options, animated);
 }
 
 void Controller::showRightColumn(object_ptr<TWidget> widget) {
@@ -364,7 +436,7 @@ void Controller::showRightColumn(object_ptr<TWidget> widget) {
 }
 
 void Controller::hideLayer(anim::type animated) {
-	_widget.ui_showBox({ nullptr }, Ui::LayerOption::CloseOther, animated);
+	_widget.showOrHideBoxOrLayer(v::null, Ui::LayerOption::CloseOther, animated);
 }
 
 void Controller::hideSettingsAndLayer(anim::type animated) {
@@ -381,10 +453,6 @@ void Controller::sideBarChanged() {
 
 void Controller::activate() {
 	_widget.activate();
-}
-
-void Controller::reActivate() {
-	_widget.reActivateWindow();
 }
 
 void Controller::updateIsActiveFocus() {
@@ -425,7 +493,7 @@ void Controller::invokeForSessionController(
 		PeerData *singlePeer,
 		Fn<void(not_null<SessionController*>)> &&callback) {
 	const auto separateWindow = singlePeer
-		? Core::App().separateWindowForPeer(singlePeer)
+		? Core::App().separateWindowFor(not_null(singlePeer))
 		: nullptr;
 	const auto separateSession = separateWindow
 		? separateWindow->sessionController()
@@ -433,7 +501,16 @@ void Controller::invokeForSessionController(
 	if (separateSession) {
 		return callback(separateSession);
 	}
-	_account->domain().activate(std::move(account));
+	const auto accountWindow = account
+		? Core::App().separateWindowFor(not_null(account))
+		: nullptr;
+	const auto accountSession = accountWindow
+		? accountWindow->sessionController()
+		: nullptr;
+	if (accountSession) {
+		return callback(accountSession);
+	}
+	_id.account->domain().activate(std::move(account));
 	if (_sessionController) {
 		callback(_sessionController.get());
 	}
@@ -513,6 +590,10 @@ auto Controller::floatPlayerDelegate() const -> FloatDelegate* {
 auto Controller::floatPlayerDelegateValue() const
 -> rpl::producer<FloatDelegate*> {
 	return _floatPlayerDelegate.value();
+}
+
+std::shared_ptr<Ui::Show> Controller::uiShow() {
+	return std::make_shared<Show>(this);
 }
 
 rpl::lifetime &Controller::lifetime() {

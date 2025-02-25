@@ -19,14 +19,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_session.h"
 #include "data/data_document.h"
 #include "data/data_document_media.h"
-#include "main/main_account.h"
 #include "main/main_app_config.h"
 #include "main/main_session.h"
 #include "lang/lang_keys.h"
 #include "lottie/lottie_single_player.h"
 #include "ui/dpr/dpr_icon.h"
 #include "ui/dpr/dpr_image.h"
-#include "ui/widgets/input_fields.h"
+#include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/buttons.h"
 #include "ui/painter.h"
 #include "ui/rect_part.h"
@@ -113,11 +112,8 @@ std::optional<EmojiSection> SetIdEmojiSection(uint64 id) {
 
 rpl::producer<std::vector<GifSection>> GifSectionsValue(
 		not_null<Main::Session*> session) {
-	const auto config = &session->account().appConfig();
-	return rpl::single(
-		rpl::empty_value()
-	) | rpl::then(
-		config->refreshed()
+	const auto config = &session->appConfig();
+	return config->value(
 	) | rpl::map([=] {
 		return config->get<std::vector<QString>>(
 			u"gif_search_emojies"_q,
@@ -291,16 +287,18 @@ StickersListFooter::StickersListFooter(Descriptor &&descriptor)
 	descriptor.parent,
 	descriptor.st ? *descriptor.st : st::defaultEmojiPan)
 , _session(descriptor.session)
-, _paused(descriptor.paused)
-, _settingsButtonVisible(descriptor.settingsButtonVisible)
+, _customTextColor(std::move(descriptor.customTextColor))
+, _paused(std::move(descriptor.paused))
+, _features(descriptor.features)
 , _iconState([=] { update(); })
 , _subiconState([=] { update(); })
 , _selectionBg(st::emojiPanRadius, st().categoriesBgOver)
-, _subselectionBg(st().iconArea / 2, st().categoriesBgOver) {
+, _subselectionBg(st().iconArea / 2, st().categoriesBgOver)
+, _forceFirstFrame(descriptor.forceFirstFrame) {
 	setMouseTracking(true);
 
 	_iconsLeft = st().iconSkip
-		+ (_settingsButtonVisible ? st().iconWidth : 0);
+		+ (_features.stickersSettings ? st().iconWidth : 0);
 	_iconsRight = st().iconSkip;
 
 	_session->downloaderTaskFinished(
@@ -618,7 +616,7 @@ void StickersListFooter::paint(
 		return;
 	}
 
-	if (_settingsButtonVisible && !hasOnlyFeaturedSets()) {
+	if (_features.stickersSettings) {
 		paintStickerSettingsIcon(p);
 	}
 
@@ -633,7 +631,7 @@ void StickersListFooter::paint(
 	if (context.expanding) {
 		const auto both = clip.intersected(
 			context.clip.marginsRemoved(
-				{ context.radius, 0, context.radius, 0 }));
+				{ 0/*context.radius*/, 0, context.radius, 0 }));
 		if (both.isEmpty()) {
 			return;
 		}
@@ -824,7 +822,7 @@ void StickersListFooter::mousePressEvent(QMouseEvent *e) {
 	if (e->button() != Qt::LeftButton) {
 		return;
 	}
-	_iconsMousePos = e ? e->globalPos() : QCursor::pos();
+	_iconsMousePos = e->globalPos();
 	updateSelected();
 
 	if (_selected == SpecialOver::Settings) {
@@ -1012,12 +1010,12 @@ void StickersListFooter::updateSelected() {
 	if (rtl()) x = width() - x;
 	const auto settingsLeft = _iconsLeft - _singleWidth;
 	auto newOver = OverState(SpecialOver::None);
-	if (_settingsButtonVisible
+	if (_features.stickersSettings
 		&& x >= settingsLeft
 		&& x < settingsLeft + _singleWidth
 		&& y >= _iconsTop
 		&& y < _iconsTop + st().footer) {
-		if (!_icons.empty() && !hasOnlyFeaturedSets()) {
+		if (!_icons.empty()) {
 			newOver = SpecialOver::Settings;
 		}
 	} else if (!_icons.empty()) {
@@ -1161,17 +1159,11 @@ void StickersListFooter::refreshSubiconsGeometry() {
 	updateEmojiWidthCallback();
 }
 
-bool StickersListFooter::hasOnlyFeaturedSets() const {
-	return (_icons.size() == 1)
-		&& (_icons[0].setId == Data::Stickers::FeaturedSetId);
-}
-
 void StickersListFooter::paintStickerSettingsIcon(QPainter &p) const {
 	const auto settingsLeft = _iconsLeft - _singleWidth;
-	st::stickersSettings.paint(
+	st().icons.settings.paint(
 		p,
-		settingsLeft
-			+ (_singleWidth - st::stickersSettings.width()) / 2,
+		(settingsLeft + (_singleWidth - st().icons.settings.width()) / 2),
 		_iconsTop + st::emojiCategoryIconTop,
 		width());
 }
@@ -1189,7 +1181,7 @@ void StickersListFooter::validateIconLottieAnimation(
 	if (icon.lottie
 		|| !icon.sticker
 		|| !HasLottieThumbnail(
-			icon.set ? icon.set->flags : Data::StickersSetFlags(),
+			icon.set ? icon.set->thumbnailType() : StickerType(),
 			icon.thumbnailMedia.get(),
 			icon.stickerMedia.get())) {
 		return;
@@ -1198,7 +1190,7 @@ void StickersListFooter::validateIconLottieAnimation(
 		icon.thumbnailMedia.get(),
 		icon.stickerMedia.get(),
 		StickerLottieSize::StickersFooter,
-		QSize(icon.pixw, icon.pixh) * cIntRetinaFactor(),
+		QSize(icon.pixw, icon.pixh) * style::DevicePixelRatio(),
 		_renderer());
 	if (!player) {
 		return;
@@ -1218,7 +1210,7 @@ void StickersListFooter::validateIconWebmAnimation(
 	if (icon.webm
 		|| !icon.sticker
 		|| !HasWebmThumbnail(
-			icon.set ? icon.set->flags : Data::StickersSetFlags(),
+			icon.set ? icon.set->thumbnailType() : StickerType(),
 			icon.thumbnailMedia.get(),
 			icon.stickerMedia.get())) {
 		return;
@@ -1351,20 +1343,24 @@ void StickersListFooter::paintSetIconToCache(
 		const auto y = (st().footer - icon.pixh) / 2;
 		if (icon.custom) {
 			icon.custom->paint(p, Ui::Text::CustomEmoji::Context{
-				.textColor = st::windowFg->c,
+				.textColor = (_customTextColor
+					? _customTextColor()
+					: st().textFg->c),
 				.size = QSize(icon.pixw, icon.pixh),
 				.now = now,
 				.scale = context.progress,
 				.position = { x, y },
 				.paused = paused,
 				.scaled = context.expanding,
+				.internal = { .forceFirstFrame = _forceFirstFrame },
 			});
 		} else if (icon.lottie && icon.lottie->ready()) {
 			const auto frame = icon.lottie->frame();
-			const auto size = frame.size() / cIntRetinaFactor();
+			const auto size = frame.size() / style::DevicePixelRatio();
 			if (icon.savedFrame.isNull()) {
 				icon.savedFrame = frame;
-				icon.savedFrame.setDevicePixelRatio(cRetinaFactor());
+				icon.savedFrame.setDevicePixelRatio(
+					style::DevicePixelRatio());
 			}
 			p.drawImage(
 				QRect(
@@ -1382,7 +1378,8 @@ void StickersListFooter::paintSetIconToCache(
 				paused ? 0 : now);
 			if (icon.savedFrame.isNull()) {
 				icon.savedFrame = frame;
-				icon.savedFrame.setDevicePixelRatio(cRetinaFactor());
+				icon.savedFrame.setDevicePixelRatio(
+					style::DevicePixelRatio());
 			}
 			p.drawImage(x, y, frame);
 		} else if (!icon.savedFrame.isNull()) {
@@ -1411,22 +1408,22 @@ void StickersListFooter::paintSetIconToCache(
 		using Section = Ui::Emoji::Section;
 		const auto sectionIcon = [&](Section section, bool active) {
 			const auto icons = std::array{
-				&st::emojiRecent,
-				&st::emojiRecentActive,
-				&st::emojiPeople,
-				&st::emojiPeopleActive,
-				&st::emojiNature,
-				&st::emojiNatureActive,
-				&st::emojiFood,
-				&st::emojiFoodActive,
-				&st::emojiActivity,
-				&st::emojiActivityActive,
-				&st::emojiTravel,
-				&st::emojiTravelActive,
-				&st::emojiObjects,
-				&st::emojiObjectsActive,
-				&st::emojiSymbols,
-				&st::emojiSymbolsActive,
+				&st().icons.recent,
+				&st().icons.recentActive,
+				&st().icons.people,
+				&st().icons.peopleActive,
+				&st().icons.nature,
+				&st().icons.natureActive,
+				&st().icons.food,
+				&st().icons.foodActive,
+				&st().icons.activity,
+				&st().icons.activityActive,
+				&st().icons.travel,
+				&st().icons.travelActive,
+				&st().icons.objects,
+				&st().icons.objectsActive,
+				&st().icons.symbols,
+				&st().icons.symbolsActive,
 			};
 			const auto index = int(section) * 2 + (active ? 1 : 0);
 
@@ -1434,11 +1431,13 @@ void StickersListFooter::paintSetIconToCache(
 			return icons[index];
 		};
 		const auto paintOne = [&](int left, const style::icon *icon) {
-			icon->paint(
-				p,
-				left + (_singleWidth - icon->width()) / 2,
-				(st().footer - icon->height()) / 2,
-				width());
+			left += (_singleWidth - icon->width()) / 2;
+			const auto top = (st().footer - icon->height()) / 2;
+			if (_customTextColor) {
+				icon->paint(p, left, top, width(), _customTextColor());
+			} else {
+				icon->paint(p, left, top, width());
+			}
 		};
 		if (_icons[info.index].setId == AllEmojiSectionSetId()
 			&& info.width > _singleWidth) {
@@ -1464,17 +1463,12 @@ void StickersListFooter::paintSetIconToCache(
 		} else {
 			paintOne(0, [&] {
 				const auto selected = (info.index == _iconState.selected);
-				if (icon.setId == Data::Stickers::FeaturedSetId) {
-					const auto &stickers = _session->data().stickers();
-					return stickers.featuredSetsUnreadCount()
-						? &st::stickersTrendingUnread
-						: &st::stickersTrending;
-					//} else if (setId == Stickers::FavedSetId) {
-					//	return &st::stickersFaved;
-				} else if (icon.setId == AllEmojiSectionSetId()) {
-					return &st::emojiPeople;
+				if (icon.setId == AllEmojiSectionSetId()) {
+					return &st().icons.people;
 				} else if (const auto section = SetIdEmojiSection(icon.setId)) {
 					return sectionIcon(*section, selected);
+				} else if (icon.setId == Data::Stickers::CollectibleSetId) {
+					return &st().icons.collectibles;
 				}
 				return sectionIcon(Section::Recent, selected);
 			}());

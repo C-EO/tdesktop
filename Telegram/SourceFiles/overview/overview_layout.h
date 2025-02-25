@@ -13,12 +13,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/click_handler_types.h"
 #include "ui/effects/animations.h"
 #include "ui/effects/radial_animation.h"
-#include "styles/style_overview.h"
 
 class Image;
 
 namespace style {
 struct RoundCheckbox;
+struct OverviewFileLayout;
 } // namespace style
 
 namespace Data {
@@ -71,6 +71,8 @@ public:
 
 	void invalidateCache();
 
+	virtual void itemDataChanged() {
+	}
 	virtual void clearHeavyPart() {
 	}
 
@@ -183,13 +185,20 @@ struct Info : public RuntimeComponent<Info, LayoutItemBase> {
 	int top = 0;
 };
 
+struct MediaOptions {
+	bool spoiler = false;
+	bool pinned = false;
+	bool story = false;
+};
+
 class Photo final : public ItemBase {
 public:
 	Photo(
 		not_null<Delegate*> delegate,
 		not_null<HistoryItem*> parent,
 		not_null<PhotoData*> photo,
-		bool spoiler);
+		MediaOptions options);
+	~Photo();
 
 	void initDimensions() override;
 	int32 resizeGetHeight(int32 width) override;
@@ -198,6 +207,7 @@ public:
 		QPoint point,
 		StateRequest request) const override;
 
+	void itemDataChanged() override;
 	void clearHeavyPart() override;
 
 private:
@@ -212,6 +222,8 @@ private:
 
 	QPixmap _pix;
 	bool _goodLoaded = false;
+	bool _pinned = false;
+	bool _story = false;
 
 };
 
@@ -279,7 +291,7 @@ public:
 		not_null<Delegate*> delegate,
 		not_null<HistoryItem*> parent,
 		not_null<DocumentData*> video,
-		bool spoiler);
+		MediaOptions options);
 	~Video();
 
 	void initDimensions() override;
@@ -289,6 +301,7 @@ public:
 		QPoint point,
 		StateRequest request) const override;
 
+	void itemDataChanged() override;
 	void clearHeavyPart() override;
 	void clearSpoiler() override;
 
@@ -303,7 +316,9 @@ private:
 	void updateStatusText();
 
 	const not_null<DocumentData*> _data;
+	PhotoData *_videoCover = nullptr;
 	mutable std::shared_ptr<Data::DocumentMedia> _dataMedia;
+	mutable std::shared_ptr<Data::PhotoMedia> _videoCoverMedia;
 	StatusText _status;
 
 	QString _duration;
@@ -311,6 +326,8 @@ private:
 
 	QPixmap _pix;
 	bool _pixBlurred = true;
+	bool _pinned = false;
+	bool _story = false;
 
 };
 
@@ -339,16 +356,17 @@ protected:
 
 private:
 	void ensureDataMediaCreated() const;
-	int duration() const;
 
-	not_null<DocumentData*> _data;
+	const not_null<DocumentData*> _data;
 	mutable std::shared_ptr<Data::DocumentMedia> _dataMedia;
 	StatusText _status;
 	ClickHandlerPtr _namel;
 
 	const style::OverviewFileLayout &_st;
 
-	Ui::Text::String _name, _details;
+	Ui::Text::String _name;
+	Ui::Text::String _details;
+	Ui::Text::String _caption;
 	int _nameVersion = 0;
 
 	void updateName();
@@ -361,6 +379,7 @@ struct DocumentFields {
 	TimeId dateOverride = 0;
 	bool forceFileLayout = false;
 };
+
 class Document final : public RadialProgressItem {
 public:
 	Document(

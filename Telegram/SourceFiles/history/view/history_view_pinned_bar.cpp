@@ -19,6 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/weak_ptr.h"
 #include "apiwrap.h"
 #include "styles/style_chat.h"
+#include "styles/style_chat_helpers.h"
 
 namespace HistoryView {
 namespace {
@@ -43,18 +44,21 @@ namespace {
 	auto result = ContentWithoutPreview(item, repaint);
 	if (!preview) {
 		static const auto kEmpty = [&] {
-			const auto size = st::historyReplyHeight * cIntRetinaFactor();
+			const auto size = st::historyReplyHeight
+				* style::DevicePixelRatio();
 			auto result = QImage(
 				QSize(size, size),
 				QImage::Format_ARGB32_Premultiplied);
 			result.fill(Qt::transparent);
-			result.setDevicePixelRatio(cRetinaFactor());
+			result.setDevicePixelRatio(style::DevicePixelRatio());
 			return result;
 		}();
 		result.preview = kEmpty;
 		result.spoilerRepaint = nullptr;
 	} else {
-		result.preview = preview->original();
+		result.preview = Images::Round(
+			preview->original(),
+			ImageRoundRadius::Small);
 		result.spoilerRepaint = spoiler ? repaint : nullptr;
 	}
 	return result;
@@ -72,9 +76,9 @@ namespace {
 			return rpl::single(ContentWithoutPreview(item, repaint));
 		}
 		constexpr auto kFullLoaded = 2;
-		constexpr auto kSomeLoaded = 1;
-		constexpr auto kNotLoaded = 0;
 		const auto loadedLevel = [=] {
+			constexpr auto kSomeLoaded = 1;
+			constexpr auto kNotLoaded = 0;
 			const auto preview = media->replyPreview();
 			return media->replyPreviewLoaded()
 				? kFullLoaded

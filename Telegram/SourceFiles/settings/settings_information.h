@@ -7,7 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "settings/settings_common.h"
+#include "settings/settings_common_session.h"
+
+class UserData;
 
 namespace Ui {
 struct UnreadBadgeStyle;
@@ -33,7 +35,7 @@ private:
 };
 
 struct AccountsEvents {
-	rpl::producer<> currentAccountActivations;
+	rpl::producer<> closeRequests;
 };
 AccountsEvents SetupAccounts(
 	not_null<Ui::VerticalLayout*> container,

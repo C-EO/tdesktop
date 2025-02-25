@@ -9,6 +9,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "ui/chat/chat_theme.h" // CountAverageColor.
 #include "ui/color_contrast.h"
+#include "ui/effects/credits_graphics.h"
+#include "ui/effects/outline_segments.h"
 #include "ui/effects/ripple_animation.h"
 #include "ui/image/image_prepare.h"
 #include "ui/text/format_values.h"
@@ -21,7 +23,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_folder.h"
 #include "data/data_forum.h"
 #include "data/data_session.h"
+#include "data/data_stories.h"
 #include "data/data_peer_values.h"
+#include "data/data_user.h"
 #include "history/history.h"
 #include "history/history_item.h"
 #include "lang/lang_keys.h"
@@ -34,6 +38,71 @@ namespace {
 constexpr auto kTopLayer = 2;
 constexpr auto kBottomLayer = 1;
 constexpr auto kNoneLayer = 0;
+constexpr auto kBlurRadius = 24;
+
+[[nodiscard]] const QPainterPath &SubscriptionOutlinePath() {
+	static auto path = QPainterPath();
+	if (!path.isEmpty()) {
+		return path;
+	}
+	const auto scaledMoveTo = [&](float64 x, float64 y) {
+		path.moveTo(style::ConvertFloatScale(x), style::ConvertFloatScale(y));
+	};
+	const auto scaledLineTo = [&](float64 x, float64 y) {
+		path.lineTo(style::ConvertFloatScale(x), style::ConvertFloatScale(y));
+	};
+	const auto scaledCubicTo = [&](
+			float64 x1,
+			float64 y1,
+			float64 x2,
+			float64 y2,
+			float64 x3,
+			float64 y3) {
+		path.cubicTo(
+			style::ConvertFloatScale(x1),
+			style::ConvertFloatScale(y1),
+			style::ConvertFloatScale(x2),
+			style::ConvertFloatScale(y2),
+			style::ConvertFloatScale(x3),
+			style::ConvertFloatScale(y3));
+	};
+	const auto scaledTranslate = [&](float64 x, float64 y) {
+		path.translate(
+			style::ConvertFloatScale(x),
+			style::ConvertFloatScale(y));
+	};
+
+	scaledMoveTo(42.3009, 18.3345);
+	scaledLineTo(44.3285, 14.1203);
+	scaledCubicTo(44.6152, 13.6549, 45.7858, 13.3542, 46.1909, 13.5523);
+	scaledCubicTo(46.3355, 13.6044, 47.0064, 13.7541, 47.3833, 14.5053);
+	scaledLineTo(49.3924 * 1.0071, 18.4206 * 0.9905);
+	// 49.5459 * 1.007, 18.7336 * 0.9897.
+	scaledCubicTo(49.8927213, 18.5406439, 52.5473, 18.8491, 53.3141, 18.8789);
+	scaledCubicTo(53.6484, 18.8441, 55.8914, 20.0065, 54.3752, 20.7818);
+	scaledCubicTo(54.1725, 20.8744, 41.3467, 31.3217, 41.3467, 31.3217);
+	scaledCubicTo(40.7918, 31.5944, 41.2661, 31.4116, 40.8968, 30.9483);
+	scaledCubicTo(39.9809, 30.3111, 40.0577, 25.4542, 40.1925, 25.5408);
+	scaledCubicTo(39.9835, 25.6454, 38.4545, 22.9776, 37.8121, 22.3477);
+	scaledLineTo(37.3236, 21.4448);
+	scaledCubicTo(37.0943, 20.8845, 37.2524, 20.4742, 37.4164, 19.7765);
+	scaledCubicTo(37.4703, 19.4582, 38.1756, 19.0759, 38.4504, 19.0422);
+	scaledLineTo(41.6566, 18.6449);
+	scaledCubicTo(41.5344, 18.6041, 42.2622, 18.6087, 42.3009, 18.3345);
+	scaledTranslate(-42.3009, -18.3345);
+	scaledTranslate(1.2, 0.4);
+
+	return path;
+}
+
+[[nodiscard]] const QImage &SubscriptionIcon() {
+	static auto starImage = QImage();
+	if (!starImage.isNull()) {
+		return starImage;
+	}
+	starImage = Ui::GenerateStars(st::dialogsSubscriptionBadgeSize, 1);
+	return starImage;
+}
 
 [[nodiscard]] QImage CornerBadgeTTL(
 		not_null<PeerData*> peer,
@@ -43,38 +112,17 @@ constexpr auto kNoneLayer = 0;
 	if (!ttl) {
 		return QImage();
 	}
-	constexpr auto kBlurRadius = 24;
-
 	const auto ratio = style::DevicePixelRatio();
 	const auto fullSize = photoSize;
-	const auto blurredFull = Images::BlurLargeImage(
-		peer->generateUserpicImage(view, fullSize * ratio, 0),
-		kBlurRadius);
 	const auto partRect = CornerBadgeTTLRect(fullSize);
 	const auto &partSize = partRect.width();
-	auto result = [&] {
-		auto blurredPart = blurredFull.copy(
-			blurredFull.width() - partSize * ratio,
-			blurredFull.height() - partSize * ratio,
-			partSize * ratio,
-			partSize * ratio);
-		blurredPart.setDevicePixelRatio(ratio);
-
-		constexpr auto kMinAcceptableContrast = 4.5;
-		const auto averageColor = Ui::CountAverageColor(blurredPart);
-		const auto contrast = Ui::CountContrast(
-			averageColor,
-			st::premiumButtonFg->c);
-		if (contrast < kMinAcceptableContrast) {
-			constexpr auto kDarkerBy = 0.2;
-			auto painterPart = QPainter(&blurredPart);
-			painterPart.setOpacity(kDarkerBy);
-			painterPart.fillRect(
-				QRect(QPoint(), partRect.size()),
-				Qt::black);
-		}
-		return Images::Circle(std::move(blurredPart));
-	}();
+	const auto partSkip = fullSize - partSize;
+	auto result = Images::Circle(BlurredDarkenedPart(
+		PeerData::GenerateUserpicImage(peer, view, fullSize * ratio, 0),
+		QRect(
+			QPoint(partSkip, partSkip) * ratio,
+			QSize(partSize, partSize) * ratio)));
+	result.setDevicePixelRatio(ratio);
 
 	auto q = QPainter(&result);
 	PainterHighQualityEnabler hq(q);
@@ -103,7 +151,7 @@ constexpr auto kNoneLayer = 0;
 	q.drawArc(innerRect, arc::kQuarterLength, arc::kHalfLength);
 
 	q.setClipRect(innerRect
-		- QMargins(innerRect.width() / 2, 0, -penWidth, -penWidth));
+		- QMargins(innerRect.width() / 2, -penWidth, -penWidth, -penWidth));
 	pen.setStyle(Qt::DotLine);
 	q.setPen(pen);
 	q.drawEllipse(innerRect);
@@ -120,6 +168,27 @@ QRect CornerBadgeTTLRect(int photoSize) {
 		photoSize - partSize + st::dialogsTTLBadgeSkip.y(),
 		partSize,
 		partSize);
+}
+
+QImage BlurredDarkenedPart(QImage image, QRect part) {
+	auto blurred = Images::BlurLargeImage(
+		std::move(image),
+		kBlurRadius).copy(part);
+
+	constexpr auto kMinAcceptableContrast = 4.5;
+	const auto averageColor = Ui::CountAverageColor(blurred);
+	const auto contrast = Ui::CountContrast(
+		averageColor,
+		st::premiumButtonFg->c);
+	if (contrast < kMinAcceptableContrast) {
+		constexpr auto kDarkerBy = 0.2;
+		auto painterPart = QPainter(&blurred);
+		painterPart.setOpacity(kDarkerBy);
+		painterPart.fillRect(QRect(QPoint(), part.size()), Qt::black);
+	}
+
+	blurred.setDevicePixelRatio(image.devicePixelRatio());
+	return blurred;
 }
 
 Row::CornerLayersManager::CornerLayersManager() = default;
@@ -230,20 +299,12 @@ void BasicRow::paintRipple(
 
 void BasicRow::paintUserpic(
 		Painter &p,
-		not_null<PeerData*> peer,
+		not_null<Entry*> entry,
+		PeerData *peer,
 		Ui::VideoUserpic *videoUserpic,
-		History *historyForCornerBadge,
-		const Ui::PaintContext &context) const {
-	PaintUserpic(
-		p,
-		peer,
-		videoUserpic,
-		_userpic,
-		context.st->padding.left(),
-		context.st->padding.top(),
-		context.width,
-		context.st->photoSize,
-		context.paused);
+		const Ui::PaintContext &context,
+		bool hasUnreadBadgesAbove) const {
+	PaintUserpic(p, entry, peer, videoUserpic, _userpic, context);
 }
 
 Row::Row(Key key, int index, int top) : _id(key), _top(top), _index(index) {
@@ -256,18 +317,28 @@ Row::~Row() {
 	clearTopicJumpRipple();
 }
 
-void Row::recountHeight(float64 narrowRatio) {
+void Row::recountHeight(float64 narrowRatio, FilterId filterId) {
 	if (const auto history = _id.history()) {
+		const auto hasTags = _id.entry()->hasChatsFilterTags(filterId);
 		_height = history->isForum()
 			? anim::interpolate(
-				st::forumDialogRow.height,
+				hasTags
+					? st::taggedForumDialogRow.height
+					: st::forumDialogRow.height,
+				st::defaultDialogRow.height,
+				narrowRatio)
+			: hasTags
+			? anim::interpolate(
+				st::taggedDialogRow.height,
 				st::defaultDialogRow.height,
 				narrowRatio)
 			: st::defaultDialogRow.height;
 	} else if (_id.folder()) {
 		_height = st::defaultDialogRow.height;
-	} else {
+	} else if (_id.topic()) {
 		_height = st::forumTopicRow.height;
+	} else {
+		_height = st::defaultDialogRow.height;
 	}
 }
 
@@ -301,14 +372,19 @@ void Row::setCornerBadgeShown(
 
 void Row::updateCornerBadgeShown(
 		not_null<PeerData*> peer,
-		Fn<void()> updateCallback) const {
+		Fn<void()> updateCallback,
+		bool hasUnreadBadgesAbove) const {
 	const auto user = peer->asUser();
 	const auto now = user ? base::unixtime::now() : TimeId();
+	const auto channel = user ? nullptr : peer->asChannel();
 	const auto nextLayer = [&] {
-		if (user && Data::IsUserOnline(user, now)) {
+		if (hasUnreadBadgesAbove) {
+			return kNoneLayer;
+		} else if (user && Data::IsUserOnline(user, now)) {
 			return kTopLayer;
-		} else if (peer->isChannel()
-			&& Data::ChannelHasActiveCall(peer->asChannel())) {
+		} else if (channel
+			&& (Data::ChannelHasActiveCall(channel)
+				|| Data::ChannelHasSubscriptionUntilDate(channel))) {
 			return kTopLayer;
 		} else if (peer->messagesTTL()) {
 			return kBottomLayer;
@@ -330,28 +406,97 @@ void Row::ensureCornerBadgeUserpic() const {
 
 void Row::PaintCornerBadgeFrame(
 		not_null<CornerBadgeUserpic*> data,
-		not_null<PeerData*> peer,
+		int framePadding,
+		not_null<Entry*> entry,
+		PeerData *peer,
 		Ui::VideoUserpic *videoUserpic,
 		Ui::PeerUserpicView &view,
-		const Ui::PaintContext &context) {
+		const Ui::PaintContext &context,
+		bool subscribed) {
 	data->frame.fill(Qt::transparent);
 
 	Painter q(&data->frame);
+	q.translate(framePadding, framePadding);
+	auto hq = std::optional<PainterHighQualityEnabler>();
+	const auto photoSize = context.st->photoSize;
+	const auto storiesCount = data->storiesCount;
+	if (storiesCount) {
+		hq.emplace(q);
+		const auto line = st::dialogsStoriesFull.lineTwice / 2.;
+		const auto skip = line * 3 / 2.;
+		const auto scale = 1. - (2 * skip / photoSize);
+		const auto center = photoSize / 2.;
+		q.save();
+		q.translate(center, center);
+		q.scale(scale, scale);
+		q.translate(-center, -center);
+	}
+	q.translate(-context.st->padding.left(), -context.st->padding.top());
 	PaintUserpic(
 		q,
+		entry,
 		peer,
 		videoUserpic,
 		view,
-		0,
-		0,
-		data->frame.width() / data->frame.devicePixelRatio(),
-		context.st->photoSize,
-		context.paused);
+		context);
+	q.translate(context.st->padding.left(), context.st->padding.top());
+	if (storiesCount) {
+		q.restore();
+
+		const auto outline = QRectF(0, 0, photoSize, photoSize);
+		const auto storiesUnreadCount = data->storiesUnreadCount;
+		const auto storiesUnreadBrush = [&] {
+			if (context.active || !storiesUnreadCount) {
+				return st::dialogsUnreadBgMutedActive->b;
+			}
+			auto gradient = Ui::UnreadStoryOutlineGradient(outline);
+			return QBrush(gradient);
+		}();
+		const auto storiesBrush = context.active
+			? st::dialogsUnreadBgMutedActive->b
+			: st::dialogsUnreadBgMuted->b;
+		const auto storiesUnread = st::dialogsStoriesFull.lineTwice / 2.;
+		const auto storiesLine = st::dialogsStoriesFull.lineReadTwice / 2.;
+		auto segments = std::vector<Ui::OutlineSegment>();
+		segments.reserve(storiesCount);
+		const auto storiesReadCount = storiesCount - storiesUnreadCount;
+		for (auto i = 0; i != storiesReadCount; ++i) {
+			segments.push_back({ storiesBrush, storiesLine });
+		}
+		for (auto i = 0; i != storiesUnreadCount; ++i) {
+			segments.push_back({ storiesUnreadBrush, storiesUnread });
+		}
+		if (peer && peer->forum()) {
+			const auto radius = context.st->photoSize
+				* Ui::ForumUserpicRadiusMultiplier();
+			Ui::PaintOutlineSegments(q, outline, radius, segments);
+		} else {
+			Ui::PaintOutlineSegments(q, outline, segments);
+		}
+	}
+
+	if (subscribed) {
+		if (!hq) {
+			hq.emplace(q);
+		}
+		// TODO: Unnecessarily repaints on activating peer.
+		q.setCompositionMode(QPainter::CompositionMode_Source);
+		const auto &s = st::dialogsSubscriptionBadgeSkip;
+		auto path = SubscriptionOutlinePath();
+		const auto x = photoSize - s.x() - st::dialogsSubscriptionBadgeSize;
+		const auto y = photoSize - s.y() - st::dialogsSubscriptionBadgeSize;
+		q.translate(x, y);
+		q.fillPath(path, Qt::transparent);
+		q.setCompositionMode(QPainter::CompositionMode_SourceOver);
+		q.resetTransform();
+		q.drawImage(x, y, SubscriptionIcon());
+		return;
+	}
 
 	const auto &manager = data->layersManager;
-	if (const auto p = manager.progressForLayer(kBottomLayer); p) {
-		const auto size = context.st->photoSize;
-		if (data->cacheTTL.isNull() && peer->messagesTTL()) {
+	if (const auto p = manager.progressForLayer(kBottomLayer); p > 0.) {
+		const auto size = photoSize;
+		if (data->cacheTTL.isNull() && peer && peer->messagesTTL()) {
 			data->cacheTTL = CornerBadgeTTL(peer, view, size);
 		}
 		q.setOpacity(p);
@@ -364,14 +509,17 @@ void Row::PaintCornerBadgeFrame(
 		return;
 	}
 
-	PainterHighQualityEnabler hq(q);
+	if (!hq) {
+		hq.emplace(q);
+	}
 	q.setCompositionMode(QPainter::CompositionMode_Source);
 
-	const auto size = peer->isUser()
+	const auto online = peer && peer->isUser();
+	const auto size = online
 		? st::dialogsOnlineBadgeSize
 		: st::dialogsCallBadgeSize;
 	const auto stroke = st::dialogsOnlineBadgeStroke;
-	const auto skip = peer->isUser()
+	const auto skip = online
 		? st::dialogsOnlineBadgeSkip
 		: st::dialogsCallBadgeSkip;
 	const auto shrink = (size / 2) * (1. - topLayerProgress);
@@ -383,8 +531,8 @@ void Row::PaintCornerBadgeFrame(
 		? st::dialogsOnlineBadgeFgActive
 		: st::dialogsOnlineBadgeFg);
 	q.drawEllipse(QRectF(
-		context.st->photoSize - skip.x() - size,
-		context.st->photoSize - skip.y() - size,
+		photoSize - skip.x() - size,
+		photoSize - skip.y() - size,
 		size,
 		size
 	).marginsRemoved({ shrink, shrink, shrink, shrink }));
@@ -392,76 +540,115 @@ void Row::PaintCornerBadgeFrame(
 
 void Row::paintUserpic(
 		Painter &p,
-		not_null<PeerData*> peer,
+		not_null<Entry*> entry,
+		PeerData *peer,
 		Ui::VideoUserpic *videoUserpic,
-		History *historyForCornerBadge,
-		const Ui::PaintContext &context) const {
-	updateCornerBadgeShown(peer);
+		const Ui::PaintContext &context,
+		bool hasUnreadBadgesAbove) const {
+	if (peer) {
+		updateCornerBadgeShown(peer, nullptr, hasUnreadBadgesAbove);
+	}
 
 	const auto cornerBadgeShown = !_cornerBadgeUserpic
 		? _cornerBadgeShown
 		: !_cornerBadgeUserpic->layersManager.isDisplayedNone();
-	if (!historyForCornerBadge || !cornerBadgeShown) {
-		BasicRow::paintUserpic(
-			p,
-			peer,
-			videoUserpic,
-			historyForCornerBadge,
-			context);
-		if (!historyForCornerBadge || !_cornerBadgeShown) {
+	const auto storiesPeer = peer
+		? ((peer->isUser() || peer->isChannel()) ? peer : nullptr)
+		: nullptr;
+	const auto storiesFolder = peer ? nullptr : _id.folder();
+	const auto storiesHas = storiesPeer
+		? storiesPeer->hasActiveStories()
+		: storiesFolder
+		? storiesFolder->storiesCount()
+		: false;
+	if (!cornerBadgeShown && !storiesHas) {
+		BasicRow::paintUserpic(p, entry, peer, videoUserpic, context, false);
+		if (!peer || !_cornerBadgeShown) {
 			_cornerBadgeUserpic = nullptr;
 		}
 		return;
 	}
 	ensureCornerBadgeUserpic();
 	const auto ratio = style::DevicePixelRatio();
-	const auto added = std::max({
+	const auto framePadding = std::max({
 		-st::dialogsCallBadgeSkip.x(),
 		-st::dialogsCallBadgeSkip.y(),
-		0 });
-	const auto frameSide = (context.st->photoSize + added)
-		* style::DevicePixelRatio();
+		st::lineWidth * 2 });
+	const auto frameSide = (2 * framePadding + context.st->photoSize)
+		* ratio;
 	const auto frameSize = QSize(frameSide, frameSide);
+	const auto storiesSource = (storiesHas && storiesPeer)
+		? storiesPeer->owner().stories().source(storiesPeer->id)
+		: nullptr;
+	const auto storiesCountReal = storiesSource
+		? int(storiesSource->ids.size())
+		: storiesFolder
+		? storiesFolder->storiesCount()
+		: storiesHas
+		? 1
+		: 0;
+	const auto storiesUnreadCountReal = storiesSource
+		? storiesSource->unreadCount()
+		: storiesFolder
+		? storiesFolder->storiesUnreadCount()
+		: (storiesPeer && storiesPeer->hasUnreadStories())
+		? 1
+		: 0;
+	const auto limit = Ui::kOutlineSegmentsMax;
+	const auto storiesCount = std::min(storiesCountReal, limit);
+	const auto storiesUnreadCount = std::min(storiesUnreadCountReal, limit);
 	if (_cornerBadgeUserpic->frame.size() != frameSize) {
 		_cornerBadgeUserpic->frame = QImage(
 			frameSize,
 			QImage::Format_ARGB32_Premultiplied);
 		_cornerBadgeUserpic->frame.setDevicePixelRatio(ratio);
 	}
-	auto key = peer->userpicUniqueKey(userpicView());
-	key.first += peer->messagesTTL();
+	auto key = peer ? peer->userpicUniqueKey(userpicView()) : InMemoryKey();
+	key.first += peer ? peer->messagesTTL() : 0;
 	const auto frameIndex = videoUserpic ? videoUserpic->frameIndex() : -1;
-	const auto paletteVersion = style::PaletteVersion();
+	const auto paletteVersionReal = style::PaletteVersion();
+	const auto paletteVersion = (paletteVersionReal & ((1 << 17) - 1));
+	const auto active = context.active ? 1 : 0;
 	const auto keyChanged = (_cornerBadgeUserpic->key != key)
 		|| (_cornerBadgeUserpic->paletteVersion != paletteVersion);
 	if (keyChanged) {
 		_cornerBadgeUserpic->cacheTTL = QImage();
 	}
+	const auto subscribed = Data::ChannelHasSubscriptionUntilDate(
+		peer ? peer->asChannel() : nullptr);
 	if (keyChanged
 		|| !_cornerBadgeUserpic->layersManager.isFinished()
-		|| _cornerBadgeUserpic->active != context.active
+		|| _cornerBadgeUserpic->active != active
 		|| _cornerBadgeUserpic->frameIndex != frameIndex
+		|| _cornerBadgeUserpic->storiesCount != storiesCount
+		|| _cornerBadgeUserpic->storiesUnreadCount != storiesUnreadCount
 		|| videoUserpic) {
 		_cornerBadgeUserpic->key = key;
 		_cornerBadgeUserpic->paletteVersion = paletteVersion;
-		_cornerBadgeUserpic->active = context.active;
+		_cornerBadgeUserpic->active = active;
+		_cornerBadgeUserpic->storiesCount = storiesCount;
+		_cornerBadgeUserpic->storiesUnreadCount = storiesUnreadCount;
 		_cornerBadgeUserpic->frameIndex = frameIndex;
 		_cornerBadgeUserpic->layersManager.markFrameShown();
 		PaintCornerBadgeFrame(
 			_cornerBadgeUserpic.get(),
+			framePadding,
+			_id.entry(),
 			peer,
 			videoUserpic,
 			userpicView(),
-			context);
+			context,
+			subscribed);
 	}
 	p.drawImage(
-		context.st->padding.left(),
-		context.st->padding.top(),
+		context.st->padding.left() - framePadding,
+		context.st->padding.top() - framePadding,
 		_cornerBadgeUserpic->frame);
-	if (historyForCornerBadge->peer->isUser()) {
+	const auto history = _id.history();
+	if (!history || history->peer->isUser() || subscribed) {
 		return;
 	}
-	const auto actionPainter = historyForCornerBadge->sendActionPainter();
+	const auto actionPainter = history->sendActionPainter();
 	const auto bg = context.active
 		? st::dialogsBgActive
 		: st::dialogsBg;

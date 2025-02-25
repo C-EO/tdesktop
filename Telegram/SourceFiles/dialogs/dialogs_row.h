@@ -7,8 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "ui/text/text.h"
 #include "ui/effects/animations.h"
+#include "ui/text/text.h"
 #include "ui/unread_badge.h"
 #include "ui/userpic_view.h"
 #include "dialogs/dialogs_key.h"
@@ -35,9 +35,11 @@ struct TopicJumpCache;
 
 namespace Dialogs {
 
+class Entry;
 enum class SortMode;
 
 [[nodiscard]] QRect CornerBadgeTTLRect(int photoSize);
+[[nodiscard]] QImage BlurredDarkenedPart(QImage image, QRect part);
 
 class BasicRow {
 public:
@@ -46,10 +48,11 @@ public:
 
 	virtual void paintUserpic(
 		Painter &p,
-		not_null<PeerData*> peer,
+		not_null<Entry*> entry,
+		PeerData *peer,
 		Ui::VideoUserpic *videoUserpic,
-		History *historyForCornerBadge,
-		const Ui::PaintContext &context) const;
+		const Ui::PaintContext &context,
+		bool hasUnreadBadgesAbove) const;
 
 	void addRipple(QPoint origin, QSize size, Fn<void()> updateCallback);
 	virtual void stopLastRipple();
@@ -92,17 +95,19 @@ public:
 
 		return _height;
 	}
-	void recountHeight(float64 narrowRatio);
+	void recountHeight(float64 narrowRatio, FilterId filterId);
 
 	void updateCornerBadgeShown(
 		not_null<PeerData*> peer,
-		Fn<void()> updateCallback = nullptr) const;
+		Fn<void()> updateCallback = nullptr,
+		bool hasUnreadBadgesAbove = false) const;
 	void paintUserpic(
 		Painter &p,
-		not_null<PeerData*> peer,
+		not_null<Entry*> entry,
+		PeerData *peer,
 		Ui::VideoUserpic *videoUserpic,
-		History *historyForCornerBadge,
-		const Ui::PaintContext &context) const final override;
+		const Ui::PaintContext &context,
+		bool hasUnreadBadgesAbove) const final override;
 
 	[[nodiscard]] bool lookupIsInTopicJump(int x, int y) const;
 	void stopLastRipple() override;
@@ -128,6 +133,9 @@ public:
 	}
 	[[nodiscard]] Data::Thread *thread() const {
 		return _id.thread();
+	}
+	[[nodiscard]] Data::SavedSublist *sublist() const {
+		return _id.sublist();
 	}
 	[[nodiscard]] not_null<Entry*> entry() const {
 		return _id.entry();
@@ -167,11 +175,13 @@ private:
 	struct CornerBadgeUserpic {
 		InMemoryKey key;
 		CornerLayersManager layersManager;
-		int paletteVersion = 0;
-		int frameIndex = -1;
-		bool active = false;
 		QImage frame;
 		QImage cacheTTL;
+		int frameIndex = -1;
+		uint32 paletteVersion : 17 = 0;
+		uint32 storiesCount : 7 = 0;
+		uint32 storiesUnreadCount : 7 = 0;
+		uint32 active : 1 = 0;
 	};
 
 	void setCornerBadgeShown(
@@ -180,18 +190,21 @@ private:
 	void ensureCornerBadgeUserpic() const;
 	static void PaintCornerBadgeFrame(
 		not_null<CornerBadgeUserpic*> data,
-		not_null<PeerData*> peer,
+		int framePadding,
+		not_null<Entry*> entry,
+		PeerData *peer,
 		Ui::VideoUserpic *videoUserpic,
 		Ui::PeerUserpicView &view,
-		const Ui::PaintContext &context);
+		const Ui::PaintContext &context,
+		bool subscribed);
 
 	Key _id;
 	mutable std::unique_ptr<CornerBadgeUserpic> _cornerBadgeUserpic;
 	int _top = 0;
 	int _height = 0;
-	int _index : 30 = 0;
-	int _cornerBadgeShown : 1 = 0;
-	int _topicJumpRipple : 1 = 0;
+	uint32 _index : 30 = 0;
+	uint32 _cornerBadgeShown : 1 = 0;
+	uint32 _topicJumpRipple : 1 = 0;
 
 };
 

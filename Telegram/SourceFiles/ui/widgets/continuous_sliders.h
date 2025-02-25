@@ -7,13 +7,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "styles/style_widgets.h"
 #include "ui/effects/animations.h"
 #include "ui/rp_widget.h"
 
 namespace base {
 class Timer;
 } // namespace base
+
+namespace style {
+struct FilledSlider;
+struct MediaSlider;
+} // namespace style
 
 namespace Ui {
 
@@ -152,7 +156,8 @@ public:
 			int valuesCount,
 			Convert &&convert,
 			Value current,
-			Progress &&progress) {
+			Progress &&progress,
+			int indexMin = 0) {
 		Expects(valuesCount > 1);
 
 		setAlwaysDisplayMarker(true);
@@ -167,10 +172,15 @@ public:
 			}
 		}
 		setAdjustCallback([=](float64 value) {
-			return base::SafeRound(value * sectionsCount) / sectionsCount;
+			return std::max(
+				base::SafeRound(value * sectionsCount),
+				indexMin * 1.
+			) / sectionsCount;
 		});
 		setChangeProgressCallback([=](float64 value) {
-			const auto index = int(base::SafeRound(value * sectionsCount));
+			const auto index = std::max(
+				int(base::SafeRound(value * sectionsCount)),
+				indexMin);
 			progress(convert(index));
 		});
 	}
@@ -189,15 +199,19 @@ public:
 			Convert &&convert,
 			Value current,
 			Progress &&progress,
-			Finished &&finished) {
+			Finished &&finished,
+			int indexMin = 0) {
 		setPseudoDiscrete(
 			valuesCount,
 			std::forward<Convert>(convert),
 			current,
-			std::forward<Progress>(progress));
+			std::forward<Progress>(progress),
+			indexMin);
 		setChangeFinishedCallback([=](float64 value) {
 			const auto sectionsCount = (valuesCount - 1);
-			const auto index = int(base::SafeRound(value * sectionsCount));
+			const auto index = std::max(
+				int(base::SafeRound(value * sectionsCount)),
+				indexMin);
 			finished(convert(index));
 		});
 	}
@@ -223,6 +237,17 @@ private:
 
 	std::vector<Divider> _dividers;
 	std::optional<QColor> _activeFgOverride;
+
+};
+
+class MediaSliderWheelless : public MediaSlider {
+public:
+	using Ui::MediaSlider::MediaSlider;
+
+protected:
+	void wheelEvent(QWheelEvent *e) override {
+		e->ignore();
+	}
 
 };
 

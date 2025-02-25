@@ -8,12 +8,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "ui/effects/animations.h"
-#include "styles/style_widgets.h"
+
+namespace style {
+struct RoundCheckbox;
+struct RoundImageCheckbox;
+} // namespace style
 
 class Painter;
 enum class ImageRoundRadius;
 
 namespace Ui {
+
+struct OutlineSegment;
 
 class RoundCheckbox {
 public:
@@ -53,11 +59,14 @@ public:
 		Fn<void()> updateCallback,
 		PaintRoundImage &&paintRoundImage,
 		Fn<std::optional<int>(int size)> roundingRadius = nullptr);
+	RoundImageCheckbox(RoundImageCheckbox&&);
+	~RoundImageCheckbox();
 
 	void paint(Painter &p, int x, int y, int outerWidth) const;
 	float64 checkedAnimationRatio() const;
 
 	void setColorOverride(std::optional<QBrush> fg);
+	void setCustomizedSegments(std::vector<OutlineSegment> segments);
 
 	bool checked() const {
 		return _check.checked();
@@ -83,7 +92,8 @@ private:
 
 	RoundCheckbox _check;
 
-	std::optional<QBrush> _fgOverride;
+	//std::optional<QBrush> _fgOverride;
+	std::vector<OutlineSegment> _segments;
 
 };
 

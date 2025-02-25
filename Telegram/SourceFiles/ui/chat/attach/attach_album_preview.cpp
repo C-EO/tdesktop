@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "ui/chat/attach/attach_album_thumbnail.h"
 #include "ui/chat/attach/attach_prepare.h"
+#include "ui/effects/spoiler_mess.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/painter.h"
 #include "lang/lang_keys.h"
@@ -19,6 +20,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtWidgets/QApplication>
 
+namespace Media::Streaming {
+
+[[nodiscard]] QImage PrepareBlurredBackground(QSize outer, QImage frame);
+
+} // namespace Media::Streaming
+
 namespace Ui {
 namespace {
 
@@ -28,10 +35,14 @@ constexpr auto kDragDuration = crl::time(200);
 
 AlbumPreview::AlbumPreview(
 	QWidget *parent,
+	const style::ComposeControls &st,
 	gsl::span<Ui::PreparedFile> items,
-	SendFilesWay way)
+	SendFilesWay way,
+	Fn<bool(int, AttachActionType)> actionAllowed)
 : RpWidget(parent)
+, _st(st)
 , _sendWay(way)
+, _actionAllowed(std::move(actionAllowed))
 , _dragTimer([=] { switchToDrag(); }) {
 	setMouseTracking(true);
 	prepareThumbs(items);
@@ -135,12 +146,13 @@ void AlbumPreview::prepareThumbs(gsl::span<Ui::PreparedFile> items) {
 	_thumbs.reserve(count);
 	for (auto i = 0; i != count; ++i) {
 		_thumbs.push_back(std::make_unique<AlbumThumbnail>(
+			_st,
 			items[i],
 			layout[i],
 			this,
 			[=] { update(); },
-			[=] { changeThumbByIndex(thumbIndex(thumbUnderCursor())); },
-			[=] { deleteThumbByIndex(thumbIndex(thumbUnderCursor())); }));
+			[=] { changeThumbByIndex(orderIndex(thumbUnderCursor())); },
+			[=] { deleteThumbByIndex(orderIndex(thumbUnderCursor())); }));
 		if (_thumbs.back()->isCompressedSticker()) {
 			_hasMixedFileHeights = true;
 		}
@@ -215,8 +227,7 @@ not_null<AlbumThumbnail*> AlbumPreview::findClosestThumb(
 	return result;
 }
 
-int AlbumPreview::orderIndex(
-	not_null<AlbumThumbnail*> thumb) const {
+int AlbumPreview::orderIndex(not_null<AlbumThumbnail*> thumb) const {
 	const auto i = ranges::find_if(_order, [&](int index) {
 		return (_thumbs[index].get() == thumb);
 	});
@@ -268,6 +279,7 @@ void AlbumPreview::finishDrag() {
 		_finishDragAnimation.start([=] { update(); }, 0., 1., kDragDuration);
 
 		updateSizeAnimated(layout);
+		_orderUpdated.fire({});
 	} else {
 		for (const auto &thumb : _thumbs) {
 			thumb->resetLayoutAnimation();
@@ -286,7 +298,7 @@ int AlbumPreview::countLayoutHeight(
 }
 
 void AlbumPreview::updateSizeAnimated(
-	const std::vector<GroupMediaLayout> &layout) {
+		const std::vector<GroupMediaLayout> &layout) {
 	const auto newHeight = countLayoutHeight(layout);
 	if (newHeight != _thumbsHeight) {
 		_thumbsHeightAnimation.start(
@@ -397,17 +409,6 @@ void AlbumPreview::paintFiles(Painter &p, QRect clip) const {
 	}
 }
 
-int AlbumPreview::thumbIndex(AlbumThumbnail *thumb) {
-	if (!thumb) {
-		return -1;
-	}
-	const auto thumbIt = ranges::find_if(_thumbs, [&](auto &t) {
-		return t.get() == thumb;
-	});
-	Expects(thumbIt != _thumbs.end());
-	return std::distance(_thumbs.begin(), thumbIt);
-}
-
 AlbumThumbnail *AlbumPreview::thumbUnderCursor() {
 	return findThumb(mapFromGlobal(QCursor::pos()));
 }
@@ -436,7 +437,7 @@ void AlbumPreview::modifyThumbByIndex(int index) {
 void AlbumPreview::thumbButtonsCallback(
 		not_null<AlbumThumbnail*> thumb,
 		AttachButtonType type) {
-	const auto index = thumbIndex(thumb);
+	const auto index = orderIndex(thumb);
 
 	switch (type) {
 	case AttachButtonType::None: return;
@@ -581,19 +582,31 @@ void AlbumPreview::mouseReleaseEvent(QMouseEvent *e) {
 void AlbumPreview::showContextMenu(
 		not_null<AlbumThumbnail*> thumb,
 		QPoint position) {
-	if (!_sendWay.sendImagesAsPhotos()) {
-		return;
-	}
 	_menu = base::make_unique_q<Ui::PopupMenu>(
 		this,
 		st::popupMenuWithIcons);
 
-	const auto spoilered = thumb->hasSpoiler();
-	_menu->addAction(spoilered
-		? tr::lng_context_disable_spoiler(tr::now)
-		: tr::lng_context_spoiler_effect(tr::now), [=] {
-		thumb->setSpoiler(!spoilered);
-	}, spoilered ? &st::menuIconSpoilerOff : &st::menuIconSpoiler);
+	const auto index = orderIndex(thumb);
+	if (_actionAllowed(index, AttachActionType::ToggleSpoiler)
+		&& _sendWay.sendImagesAsPhotos()) {
+		const auto spoilered = thumb->hasSpoiler();
+		_menu->addAction(spoilered
+			? tr::lng_context_disable_spoiler(tr::now)
+			: tr::lng_context_spoiler_effect(tr::now), [=] {
+			thumb->setSpoiler(!spoilered);
+		}, spoilered ? &st::menuIconSpoilerOff : &st::menuIconSpoiler);
+	}
+	if (_actionAllowed(index, AttachActionType::EditCover)) {
+		_menu->addAction(tr::lng_context_edit_cover(tr::now), [=] {
+			_thumbEditCoverRequested.fire_copy(index);
+		}, &st::menuIconEdit);
+
+		if (_actionAllowed(index, AttachActionType::ClearCover)) {
+			_menu->addAction(tr::lng_context_clear_cover(tr::now), [=] {
+				_thumbClearCoverRequested.fire_copy(index);
+			}, &st::menuIconCancel);
+		}
+	}
 
 	if (_menu->empty()) {
 		_menu = nullptr;
@@ -616,8 +629,47 @@ void AlbumPreview::switchToDrag() {
 	update();
 }
 
-rpl::producer<int> AlbumPreview::thumbModified() const {
-	return _thumbModified.events();
+QImage AlbumPreview::generatePriceTagBackground() const {
+	auto wmax = 0;
+	auto hmax = 0;
+	for (auto &thumb : _thumbs) {
+		const auto geometry = thumb->geometry();
+		accumulate_max(wmax, geometry.x() + geometry.width());
+		accumulate_max(hmax, geometry.y() + geometry.height());
+	}
+	const auto size = QSize(wmax, hmax);
+	if (size.isEmpty()) {
+		return {};
+	}
+	const auto ratio = style::DevicePixelRatio();
+	const auto full = size * ratio;
+	const auto skip = st::historyGroupSkip;
+	auto result = QImage(full, QImage::Format_ARGB32_Premultiplied);
+	result.setDevicePixelRatio(ratio);
+	result.fill(Qt::black);
+	auto p = QPainter(&result);
+	auto hq = PainterHighQualityEnabler(p);
+	for (auto &thumb : _thumbs) {
+		const auto geometry = thumb->geometry();
+		if (geometry.isEmpty()) {
+			continue;
+		}
+		const auto w = geometry.width();
+		const auto h = geometry.height();
+		const auto wscale = (w + skip) / float64(w);
+		const auto hscale = (h + skip) / float64(h);
+		p.save();
+		p.translate(geometry.center());
+		p.scale(wscale, hscale);
+		p.translate(-geometry.center());
+		thumb->paintInAlbum(p, 0, 0, 1., 1.);
+		p.restore();
+	}
+	p.end();
+
+	return ::Media::Streaming::PrepareBlurredBackground(
+		full,
+		std::move(result));
 }
 
 } // namespace Ui

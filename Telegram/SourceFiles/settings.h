@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "base/integration.h"
 #include "ui/style/style_core.h"
 
 #define DeclareReadSetting(Type, Name) extern Type g##Name; \
@@ -56,11 +57,15 @@ inline void cForceWorkingDir(const QString &newDir) {
 	}
 
 }
-DeclareReadSetting(QString, ExeName);
-DeclareReadSetting(QString, ExeDir);
+inline QString cExeName() {
+	return base::Integration::Instance().executableName();
+}
+inline QString cExeDir() {
+	return base::Integration::Instance().executableDir();
+}
 DeclareSetting(QString, DialogLastPath);
 DeclareSetting(QString, DialogHelperPath);
-inline const QString &cDialogHelperPathFinal() {
+inline QString cDialogHelperPathFinal() {
 	return cDialogHelperPath().isEmpty() ? cExeDir() : cDialogHelperPath();
 }
 
@@ -119,14 +124,6 @@ inline bool passcodeCanTry() {
 	case 7: return dt >= 25000;
 	}
 	return dt >= 30000;
-}
-
-inline float64 cRetinaFactor() {
-	return style::DevicePixelRatio();
-}
-
-inline int32 cIntRetinaFactor() {
-	return style::DevicePixelRatio();
 }
 
 inline int cEvalScale(int scale) {

@@ -15,6 +15,7 @@ enum class ImageRoundRadius;
 
 namespace style {
 struct DialogRow;
+struct DialogsMiniIcon;
 } // namespace style
 
 namespace Ui {
@@ -60,7 +61,8 @@ public:
 		not_null<const HistoryItem*> item,
 		Data::Forum *forum,
 		Fn<void()> customEmojiRepaint,
-		ToPreviewOptions options);
+		ToPreviewOptions options,
+		Fn<void()> customLoadingFinishCallback = nullptr);
 
 	void paint(
 		Painter &p,
@@ -92,6 +94,8 @@ private:
 	mutable std::vector<ItemPreviewImage> _imagesCache;
 	mutable std::unique_ptr<SpoilerAnimation> _spoiler;
 	mutable std::unique_ptr<LoadingContext> _loadingContext;
+	mutable const style::DialogsMiniIcon *_leftIcon = nullptr;
+	mutable bool _hasPlainLinkAtBegin = false;
 
 };
 

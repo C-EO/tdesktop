@@ -9,14 +9,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "data/data_user.h"
 #include "lang/lang_keys.h"
-#include "main/main_account.h"
 #include "main/main_app_config.h"
+#include "main/main_app_config_values.h"
 #include "main/main_session.h"
 #include "ui/text/text_utilities.h"
 #include "ui/widgets/labels.h"
 #include "ui/widgets/menu/menu_action.h"
 #include "ui/widgets/popup_menu.h"
 #include "styles/style_chat.h" // expandedMenuSeparator.
+#include "styles/style_chat_helpers.h"
 
 namespace Info {
 namespace Profile {
@@ -50,7 +51,7 @@ private:
 		return label->height();
 	};
 	auto widthMin = basicWidth;
-	auto widthMax = label->naturalWidth();
+	auto widthMax = label->textMaxWidth();
 	if (height(widthMin) <= heightLimit || height(widthMax) > heightLimit) {
 		return basicWidth;
 	}
@@ -111,44 +112,34 @@ int TextItem::contentHeight() const {
 
 } // namespace
 
-void AddPhoneMenu(not_null<Ui::PopupMenu*> menu, not_null<UserData*> user) {
-	if (user->isSelf()) {
-		return;
-	}
+bool IsCollectiblePhone(not_null<UserData*> user) {
 	using Strings = std::vector<QString>;
-	const auto prefixes = user->session().account().appConfig().get<Strings>(
+	const auto prefixes = user->session().appConfig().get<Strings>(
 		u"fragment_prefixes"_q,
-		std::vector<QString>());
-	{
-		const auto proj = [&phone = user->phone()](const QString &p) {
-			return phone.startsWith(p);
-		};
-		if (ranges::none_of(prefixes, proj)) {
-			return;
-		}
-	}
-	const auto domains = user->session().account().appConfig().get<Strings>(
-		u"whitelisted_domains"_q,
-		std::vector<QString>());
-	const auto proj = [&, domain = u"fragment"_q](const QString &p) {
-		return p.contains(domain);
+		Strings{ u"888"_q });
+	const auto phone = user->phone();
+	const auto proj = [&](const QString &p) {
+		return phone.startsWith(p);
 	};
-	const auto it = ranges::find_if(domains, proj);
-	if (it == end(domains)) {
-		return;
-	}
+	return ranges::any_of(prefixes, proj);
+}
 
-	menu->addSeparator(&st::expandedMenuSeparator);
-	const auto link = Ui::Text::Link(
-		tr::lng_info_mobile_context_menu_fragment_about_link(tr::now),
-		*it);
-	menu->addAction(base::make_unique_q<TextItem>(
-		menu->menu(),
-		st::reactionMenu.menu,
-		tr::lng_info_mobile_context_menu_fragment_about(
-			lt_link,
-			rpl::single(link),
-			Ui::Text::RichLangValue)));
+void AddPhoneMenu(not_null<Ui::PopupMenu*> menu, not_null<UserData*> user) {
+	if (user->isSelf() || !IsCollectiblePhone(user)) {
+		return;
+	} else if (const auto url = AppConfig::FragmentLink(&user->session())) {
+		menu->addSeparator(&st::expandedMenuSeparator);
+		const auto link = Ui::Text::Link(
+			tr::lng_info_mobile_context_menu_fragment_about_link(tr::now),
+			*url);
+		menu->addAction(base::make_unique_q<TextItem>(
+			menu->menu(),
+			st::reactionMenu.menu,
+			tr::lng_info_mobile_context_menu_fragment_about(
+				lt_link,
+				rpl::single(link),
+				Ui::Text::RichLangValue)));
+	}
 }
 
 } // namespace Profile

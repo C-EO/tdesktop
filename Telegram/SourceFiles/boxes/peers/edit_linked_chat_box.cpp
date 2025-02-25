@@ -10,20 +10,21 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "data/data_channel.h"
 #include "data/data_chat.h"
-#include "settings/settings_common.h"
+#include "settings/settings_common.h" // AddButton.
 #include "data/data_changes.h"
 #include "ui/widgets/labels.h"
+#include "ui/vertical_list.h"
 #include "ui/widgets/buttons.h"
 #include "ui/wrap/vertical_layout.h"
-#include "ui/text/text_utilities.h" // Ui::Text::ToUpper
+#include "ui/text/text_utilities.h" // Ui::Text::RichLangValue
 #include "boxes/peer_list_box.h"
 #include "ui/boxes/confirm_box.h"
-#include "ui/toasts/common_toasts.h"
 #include "boxes/add_contact_box.h"
 #include "apiwrap.h"
 #include "main/main_session.h"
 #include "window/window_session_controller.h"
 #include "styles/style_layers.h"
+#include "styles/style_menu_icons.h"
 #include "styles/style_boxes.h"
 #include "styles/style_info.h"
 #include "styles/style_settings.h"
@@ -99,7 +100,7 @@ void Controller::prepare() {
 			return;
 		}
 		auto row = std::make_unique<PeerListRow>(chat);
-		const auto username = chat->userName();
+		const auto username = chat->username();
 		row->setCustomStatus(!username.isEmpty()
 			? ('@' + username)
 			: (chat->isChannel() && !chat->isMegagroup())
@@ -168,13 +169,11 @@ void Controller::choose(not_null<ChannelData*> chat) {
 		const auto onstack = _callback;
 		onstack(chat);
 	};
-	delegate()->peerListShowBox(
-		Ui::MakeConfirmBox({
-			.text = text,
-			.confirmed = sure,
-			.confirmText = tr::lng_manage_discussion_group_link(tr::now),
-		}),
-		Ui::LayerOption::KeepOther);
+	delegate()->peerListUiShow()->showBox(Ui::MakeConfirmBox({
+		.text = text,
+		.confirmed = sure,
+		.confirmText = tr::lng_manage_discussion_group_link(tr::now),
+	}));
 }
 
 void Controller::choose(not_null<ChatData*> chat) {
@@ -201,13 +200,11 @@ void Controller::choose(not_null<ChatData*> chat) {
 		};
 		chat->session().api().migrateChat(chat, crl::guard(this, done));
 	};
-	delegate()->peerListShowBox(
-		Ui::MakeConfirmBox({
-			.text = text,
-			.confirmed = sure,
-			.confirmText = tr::lng_manage_discussion_group_link(tr::now),
-		}),
-		Ui::LayerOption::KeepOther);
+	delegate()->peerListUiShow()->showBox(Ui::MakeConfirmBox({
+		.text = text,
+		.confirmed = sure,
+		.confirmText = tr::lng_manage_discussion_group_link(tr::now),
+	}));
 }
 
 [[nodiscard]] rpl::producer<TextWithEntities> About(
@@ -263,46 +260,44 @@ void Controller::choose(not_null<ChatData*> chat) {
 
 	const auto init = [=](not_null<ListBox*> box) {
 		auto above = object_ptr<Ui::VerticalLayout>(box);
-		Settings::AddDividerTextWithLottie(
-			above,
-			box->showFinishes(),
-			About(channel, chat),
-			u"discussion"_q);
+		Settings::AddDividerTextWithLottie(above, {
+			.lottie = u"discussion"_q,
+			.showFinished = box->showFinishes(),
+			.about = About(channel, chat),
+		});
 		if (!chat) {
 			Assert(channel->isBroadcast());
 
-			Settings::AddSkip(above);
-			Settings::AddButton(
+			Ui::AddSkip(above);
+			Settings::AddButtonWithIcon(
 				above,
 				tr::lng_manage_discussion_group_create(),
 				st::infoCreateLinkedChatButton,
-				{ &st::settingsIconChat, Settings::kIconLightBlue }
+				{ &st::menuIconGroupCreate }
 			)->addClickHandler([=, parent = above.data()] {
 				const auto guarded = crl::guard(parent, callback);
-				Window::Show(navigation).showBox(
-					Box<GroupInfoBox>(
-						navigation,
-						GroupInfoBox::Type::Megagroup,
-						channel->name() + " Chat",
-						guarded),
-					Ui::LayerOption::KeepOther);
+				navigation->uiShow()->showBox(Box<GroupInfoBox>(
+					navigation,
+					GroupInfoBox::Type::Megagroup,
+					channel->name() + " Chat",
+					guarded));
 			});
 		}
 		box->peerListSetAboveWidget(std::move(above));
 
 		auto below = object_ptr<Ui::VerticalLayout>(box);
 		if (chat && canEdit) {
-			Settings::AddButton(
+			Settings::AddButtonWithIcon(
 				below,
 				(channel->isBroadcast()
 					? tr::lng_manage_discussion_group_unlink
 					: tr::lng_manage_linked_channel_unlink)(),
 				st::infoUnlinkChatButton,
-				{ &st::settingsIconMinus, Settings::kIconRed }
+				{ &st::menuIconRemove }
 			)->addClickHandler([=] { callback(nullptr); });
-			Settings::AddSkip(below);
+			Ui::AddSkip(below);
 		}
-		Settings::AddDividerText(
+		Ui::AddDividerText(
 			below,
 			(channel->isBroadcast()
 				? tr::lng_manage_discussion_group_posted
@@ -363,10 +358,8 @@ object_ptr<Ui::BoxContent> EditLinkedChatBox(
 
 void ShowForumForDiscussionError(
 		not_null<Window::SessionNavigation*> navigation) {
-	Ui::ShowMultilineToast({
-		.parentOverride = Window::Show(navigation).toastParent(),
-		.text = tr::lng_forum_topics_no_discussion(
+	navigation->showToast(
+		tr::lng_forum_topics_no_discussion(
 			tr::now,
-			Ui::Text::RichLangValue),
-	});
+			Ui::Text::RichLangValue));
 }

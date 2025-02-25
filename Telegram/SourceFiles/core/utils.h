@@ -21,10 +21,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <set>
 #include <filesystem>
 
-#if __has_include(<kurlmimedata.h>)
-#include <kurlmimedata.h>
-#endif
-
 #if __has_include(<ksandbox.h>)
 #include <ksandbox.h>
 #endif
@@ -49,12 +45,9 @@ inline QString IconName() {
 
 inline bool CanReadDirectory(const QString &path) {
 #ifndef Q_OS_MAC // directory_iterator since 10.15
-	try {
-		std::filesystem::directory_iterator(path.toStdString());
-		return true;
-	} catch (...) {
-		return false;
-	}
+	std::error_code error;
+	std::filesystem::directory_iterator(path.toStdString(), error);
+	return !error;
 #else
 	Unexpected("Not implemented.");
 #endif

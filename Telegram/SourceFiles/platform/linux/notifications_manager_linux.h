@@ -20,14 +20,8 @@ public:
 
 protected:
 	void doShowNativeNotification(
-		not_null<PeerData*> peer,
-		MsgId topicRootId,
-		Ui::PeerUserpicView &userpicView,
-		MsgId msgId,
-		const QString &title,
-		const QString &subtitle,
-		const QString &msg,
-		DisplayOptions options) override;
+		NotificationInfo &&info,
+		Ui::PeerUserpicView &userpicView) override;
 	void doClearAllFast() override;
 	void doClearFromItem(not_null<HistoryItem*> item) override;
 	void doClearFromTopic(not_null<Data::ForumTopic*> topic) override;
@@ -38,6 +32,7 @@ protected:
 	void doMaybeFlashBounce(Fn<void()> flashBounce) override;
 
 private:
+	friend void Create(Window::Notifications::System *system);
 	class Private;
 	const std::unique_ptr<Private> _private;
 

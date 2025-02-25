@@ -42,6 +42,15 @@ bool PreparedFile::isSticker() const {
 		&& Core::IsMimeSticker(information->filemime);
 }
 
+bool PreparedFile::isVideoFile() const {
+	Expects(information != nullptr);
+
+	using Video = Ui::PreparedFileInformation::Video;
+	return (type == PreparedFile::Type::Video)
+		&& v::is<Video>(information->media)
+		&& !v::get<Video>(information->media).isGifv;
+}
+
 bool PreparedFile::isGifv() const {
 	Expects(information != nullptr);
 
@@ -80,6 +89,10 @@ bool CanBeInAlbumType(PreparedFile::Type type, AlbumType album) {
 		return (type == Type::Photo) || (type == Type::File);
 	}
 	Unexpected("AlbumType in CanBeInAlbumType.");
+}
+
+bool InsertTextOnImageCancel(const QString &text) {
+	return !text.isEmpty() && !text.startsWith(u"data:image"_q);
 }
 
 PreparedList PreparedList::Reordered(
@@ -184,6 +197,21 @@ bool PreparedList::canAddCaption(bool sendingAlbum, bool compress) const {
 	return !hasFiles && !hasMusic && !hasNotGrouped;
 }
 
+bool PreparedList::canMoveCaption(bool sendingAlbum, bool compress) const {
+	if (!canAddCaption(sendingAlbum, compress)) {
+		return false;
+	} else if (files.size() != 1) {
+		return true;
+	}
+	const auto &file = files.front();
+	return (file.type == PreparedFile::Type::Video)
+		|| (file.type == PreparedFile::Type::Photo && compress);
+}
+
+bool PreparedList::canChangePrice(bool sendingAlbum, bool compress) const {
+	return canMoveCaption(sendingAlbum, compress);
+}
+
 bool PreparedList::hasGroupOption(bool slowmode) const {
 	if (slowmode || files.size() < 2) {
 		return false;
@@ -224,6 +252,18 @@ bool PreparedList::canHaveEditorHintLabel() const {
 
 bool PreparedList::hasSticker() const {
 	return ranges::any_of(files, &PreparedFile::isSticker);
+}
+
+bool PreparedList::hasSpoilerMenu(bool compress) const {
+	const auto allAreVideo = !ranges::any_of(files, [](const auto &f) {
+		using Type = Ui::PreparedFile::Type;
+		return (f.type != Type::Video);
+	});
+	const auto allAreMedia = !ranges::any_of(files, [](const auto &f) {
+		using Type = Ui::PreparedFile::Type;
+		return (f.type != Type::Photo) && (f.type != Type::Video);
+	});
+	return allAreVideo || (allAreMedia && compress);
 }
 
 int MaxAlbumItems() {
